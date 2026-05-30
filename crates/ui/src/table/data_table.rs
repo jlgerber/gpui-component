@@ -34,8 +34,13 @@ pub(super) struct TableOptions {
     pub(super) stripe: bool,
     /// Set to use border style of the table.
     pub(super) bordered: bool,
-    /// The cell size of the table.
+    /// The cell size of the table (drives body row height).
     pub(super) size: Size,
+    /// Optional override for the **header** row size. When `None`,
+    /// the header inherits `size`. Set this when the body row
+    /// height (e.g. tall enough for inline thumbnails) needs to
+    /// be decoupled from the header chrome height.
+    pub(super) header_size: Option<Size>,
 }
 
 impl Default for TableOptions {
@@ -45,6 +50,7 @@ impl Default for TableOptions {
             stripe: false,
             bordered: true,
             size: Size::default(),
+            header_size: None,
         }
     }
 }
@@ -117,6 +123,16 @@ where
     pub fn scrollbar_visible(mut self, vertical: bool, horizontal: bool) -> Self {
         self.options.scrollbar_visible =
             Edges { right: vertical, bottom: horizontal, ..Default::default() };
+        self
+    }
+
+    /// Override the **header** row size independently of the body's
+    /// `Sizable::with_size`. Useful when the body needs a tall row
+    /// (e.g. to fit inline thumbnails) but the header chrome should
+    /// stay at a fixed height. `None` (the default) makes the header
+    /// inherit the body size.
+    pub fn header_size(mut self, size: impl Into<Size>) -> Self {
+        self.options.header_size = Some(size.into());
         self
     }
 }
