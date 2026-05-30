@@ -612,6 +612,14 @@ where
         count.saturating_sub(1).max(1)
     }
 
+    /// Effective size for header-row chrome. Falls back to the
+    /// body `size` when `header_size` is unset, so the historical
+    /// "header and body row heights are equal" behaviour is the
+    /// default.
+    fn header_size(&self) -> crate::Size {
+        self.options.header_size.unwrap_or(self.options.size)
+    }
+
     fn on_row_right_click(
         &mut self,
         _: &MouseDownEvent,
@@ -1541,7 +1549,7 @@ where
                             v_flex().min_w_full().flex_shrink_0().children(layout.iter().enumerate().map(|(_row_ix, row_cells)| {
                                 h_flex()
                                     .min_w_full()
-                                    .h(self.options.size.table_row_height())
+                                    .h(self.header_size().table_row_height())
                                     .border_b_1()
                                     .border_color(cx.theme().border)
                                     .children(row_cells.iter().filter_map(|cell| {
@@ -1602,7 +1610,7 @@ where
                             let is_leaf_row = row_ix + 1 == layout_len;
                             h_flex()
                                 .min_w_full()
-                                .h(self.options.size.table_row_height())
+                                .h(self.header_size().table_row_height())
                                 .border_b_1()
                                 .border_color(cx.theme().border)
                                 .map(|this| {
@@ -2059,7 +2067,7 @@ where
         Some(
             div()
                 .absolute()
-                .top(self.options.size.table_row_height() * header_rows as f32)
+                .top(self.header_size().table_row_height() * header_rows as f32)
                 .right_0()
                 .bottom_0()
                 .w(Scrollbar::width())
