@@ -814,6 +814,12 @@ impl TabPanel {
                     return None;
                 }
 
+                // Per-tab closability: gate the close (x) on the TabPanel's
+                // closable flag AND this specific panel's closable(). The
+                // consumer sets closable = docked_count > 1, so the LAST docked
+                // tab is non-closable and gets no x (min-1 invariant).
+                let closable = self.closable && panel.closable(cx);
+
                 // Always not show active tab style, if the panel is collapsed
                 if self.collapsed {
                     active = false;
@@ -831,6 +837,23 @@ impl TabPanel {
                             }
                         })
                         .selected(active)
+                        .when(closable, |this| {
+                            this.suffix(
+                                Button::new(SharedString::from(format!("close-tab:{}", ix)))
+                                    .icon(IconName::Close)
+                                    .xsmall()
+                                    .ghost()
+                                    .tab_stop(false)
+                                    .on_click(cx.listener({
+                                        let panel = panel.clone();
+                                        move |this, _ev, window, cx| {
+                                            // Don't also activate the tab.
+                                            cx.stop_propagation();
+                                            this.remove_panel(panel.clone(), window, cx);
+                                        }
+                                    })),
+                            )
+                        })
                         .on_click(cx.listener({
                             let is_collapsed = self.collapsed;
                             let dock_area = self.dock_area.clone();
