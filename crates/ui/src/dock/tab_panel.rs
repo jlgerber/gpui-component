@@ -645,8 +645,13 @@ impl TabPanel {
             // out of view (clipping the right dock's toggle entirely). The bottom
             // dock keeps its full collapsed title bar (handled below).
             if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
+                // Top-anchored, title-bar-height row so the toggle sits at the TOP
+                // of the collapsed strip (not vertically centered in the full
+                // height), matching where an expanded title bar would be.
                 return h_flex()
-                    .size_full()
+                    .w_full()
+                    .h(px(30.))
+                    .flex_none()
                     .items_center()
                     .justify_center()
                     .gap_1()
