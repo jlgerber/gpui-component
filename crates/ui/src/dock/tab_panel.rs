@@ -321,6 +321,10 @@ impl TabPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Button> {
+        // Only render the add-tab affordance in edit mode.
+        if !crate::dock::is_edit_mode(cx) {
+            return None;
+        }
         if self.collapsed {
             return None;
         }
@@ -818,7 +822,9 @@ impl TabPanel {
                 // closable flag AND this specific panel's closable(). The
                 // consumer sets closable = docked_count > 1, so the LAST docked
                 // tab is non-closable and gets no x (min-1 invariant).
-                let closable = self.closable && panel.closable(cx);
+                // The per-tab pop-out/close affordances only render in edit mode.
+                let closable =
+                    crate::dock::is_edit_mode(cx) && self.closable && panel.closable(cx);
 
                 // Always not show active tab style, if the panel is collapsed
                 if self.collapsed {
