@@ -623,7 +623,10 @@ impl TabPanel {
     ///
     /// E.g. if the parent and self only have one panel, it is not draggable.
     fn draggable(&self, cx: &App) -> bool {
-        !self.is_locked(cx) && !self.is_last_panel(cx)
+        // Dragging a tab relocates it or (drop-on-edge) splits the dock — both
+        // structural changes, so they're gated behind edit mode along with the
+        // +/pop-out/close affordances. Off edit mode, the layout is locked.
+        crate::dock::is_edit_mode(cx) && !self.is_locked(cx) && !self.is_last_panel(cx)
     }
 
     /// Return true if the tab panel is droppable.
