@@ -518,6 +518,9 @@ impl DockItem {
     }
 
     /// Recursively traverses to find the right-most and top-most TabPanel.
+    // Unused since side docks host their own toggle buttons (see
+    // `update_toggle_button_tab_panels`); kept to stay close to upstream.
+    #[allow(dead_code)]
     pub(crate) fn right_top_tab_panel(&self, cx: &App) -> Option<Entity<TabPanel>> {
         match self {
             DockItem::Tabs { view, .. } => Some(view.clone()),
