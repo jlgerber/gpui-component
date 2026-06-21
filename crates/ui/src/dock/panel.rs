@@ -140,6 +140,12 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
     /// When this Panel is removed from a TabPanel, this will be called.
     fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {}
 
+    /// When the per-tab pop-out button is clicked, this will be called.
+    ///
+    /// Default is a no-op. A consumer panel can override this to implement
+    /// tear-off / floating behavior (the dock itself does not pop the panel out).
+    fn on_pop_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {}
+
     /// The addition dropdown menu of the panel, default is `None`.
     fn dropdown_menu(
         &mut self,
@@ -186,6 +192,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
     fn on_added_to(&self, tab_panel: WeakEntity<TabPanel>, window: &mut Window, cx: &mut App);
     fn on_removed(&self, window: &mut Window, cx: &mut App);
+    fn on_pop_out(&self, window: &mut Window, cx: &mut App);
     fn dropdown_menu(&self, menu: PopupMenu, window: &mut Window, cx: &mut App) -> PopupMenu;
     fn toolbar_buttons(&self, window: &mut Window, cx: &mut App) -> Option<Vec<Button>>;
     fn view(&self) -> AnyView;
@@ -252,6 +259,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn on_removed(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |this, cx| this.on_removed(window, cx));
+    }
+
+    fn on_pop_out(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |this, cx| this.on_pop_out(window, cx));
     }
 
     fn dropdown_menu(&self, menu: PopupMenu, window: &mut Window, cx: &mut App) -> PopupMenu {

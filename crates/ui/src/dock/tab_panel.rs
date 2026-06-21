@@ -972,19 +972,48 @@ impl TabPanel {
                         .selected(active)
                         .when(closable, |this| {
                             this.suffix(
-                                Button::new(SharedString::from(format!("close-tab:{}", ix)))
-                                    .icon(IconName::Close)
-                                    .xsmall()
-                                    .ghost()
-                                    .tab_stop(false)
-                                    .on_click(cx.listener({
-                                        let panel = panel.clone();
-                                        move |this, _ev, window, cx| {
-                                            // Don't also activate the tab.
-                                            cx.stop_propagation();
-                                            this.remove_panel(panel.clone(), window, cx);
-                                        }
-                                    })),
+                                h_flex()
+                                    .gap_1()
+                                    // Pop-out button (before the close x). Invokes the
+                                    // consumer's Panel::on_pop_out hook; the dock does not
+                                    // remove/float the panel itself.
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "pop-out-tab:{}",
+                                            ix
+                                        )))
+                                        .icon(IconName::ExternalLink)
+                                        .tooltip(t!("Dock.Pop Out"))
+                                        .xsmall()
+                                        .ghost()
+                                        .tab_stop(false)
+                                        .on_click(cx.listener({
+                                            let panel = panel.clone();
+                                            move |_this, _ev, window, cx| {
+                                                // Don't also activate the tab.
+                                                cx.stop_propagation();
+                                                panel.on_pop_out(window, cx);
+                                            }
+                                        })),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "close-tab:{}",
+                                            ix
+                                        )))
+                                        .icon(IconName::Close)
+                                        .xsmall()
+                                        .ghost()
+                                        .tab_stop(false)
+                                        .on_click(cx.listener({
+                                            let panel = panel.clone();
+                                            move |this, _ev, window, cx| {
+                                                // Don't also activate the tab.
+                                                cx.stop_propagation();
+                                                this.remove_panel(panel.clone(), window, cx);
+                                            }
+                                        })),
+                                    ),
                             )
                         })
                         .on_click(cx.listener({
