@@ -980,6 +980,9 @@ impl TabPanel {
                             this.suffix(
                                 h_flex()
                                     .gap_1()
+                                    // Tighten the gap between the tab label and the
+                                    // pop-out button (the Tab row's ~4px gap, cut ~1/3).
+                                    .ml(px(-1.5))
                                     // Pop-out button (before the close x). Invokes the
                                     // consumer's Panel::on_pop_out hook; the dock does not
                                     // remove/float the panel itself.
