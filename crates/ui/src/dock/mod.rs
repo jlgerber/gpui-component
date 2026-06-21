@@ -1092,19 +1092,26 @@ impl DockArea {
     }
 
     pub fn update_toggle_button_tab_panels(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        // Left toggle button
+        // Each side/bottom dock owns its own toggle (expand/contract) button: the
+        // button is hosted by that dock's own tab panel, so it sits in the dock's
+        // header rather than in the center area. (Previously the left/right toggles
+        // were hosted by the center's top tab panels; bottom already owned its own.)
+
+        // Left toggle button — hosted by the left dock's own tab panel.
         self.toggle_button_panels.left = self
-            .center
-            .left_top_tab_panel(cx)
+            .left_dock
+            .as_ref()
+            .and_then(|dock| dock.read(cx).panel.left_top_tab_panel(cx))
             .map(|view| view.entity_id());
 
-        // Right toggle button
+        // Right toggle button — hosted by the right dock's own tab panel.
         self.toggle_button_panels.right = self
-            .center
-            .right_top_tab_panel(cx)
+            .right_dock
+            .as_ref()
+            .and_then(|dock| dock.read(cx).panel.left_top_tab_panel(cx))
             .map(|view| view.entity_id());
 
-        // Bottom toggle button
+        // Bottom toggle button — hosted by the bottom dock's own tab panel.
         self.toggle_button_panels.bottom = self
             .bottom_dock
             .as_ref()
