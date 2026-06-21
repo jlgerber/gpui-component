@@ -405,12 +405,26 @@ impl Render for Dock {
                 DockPlacement::Left | DockPlacement::Right => this.w(px(29.)),
                 DockPlacement::Center => this,
             })
-            .map(|this| match &self.panel {
-                DockItem::Split { view, .. } => this.child(view.clone()),
-                DockItem::Tabs { view, .. } => this.child(view.clone()),
-                DockItem::Panel { view, .. } => this.child(view.clone().view().cached(cache_style)),
-                // Not support to render Tiles and Tile into Dock
-                DockItem::Tiles { .. } => this,
+            .map(|this| {
+                // When collapsed, a `Split` (StackPanel) content would lay out its
+                // child + a resize handle and hide the inner TabPanel's collapse
+                // toggle in the thin strip (you'd have to drag the splitter to see
+                // it). Render the inner TabPanel directly instead, so its toggle
+                // shows. When open, render the full (splittable) StackPanel.
+                if !self.open {
+                    if let Some(tab_panel) = self.panel.left_top_tab_panel(cx) {
+                        return this.child(tab_panel);
+                    }
+                }
+                match &self.panel {
+                    DockItem::Split { view, .. } => this.child(view.clone()),
+                    DockItem::Tabs { view, .. } => this.child(view.clone()),
+                    DockItem::Panel { view, .. } => {
+                        this.child(view.clone().view().cached(cache_style))
+                    }
+                    // Not support to render Tiles and Tile into Dock
+                    DockItem::Tiles { .. } => this,
+                }
             })
             .child(self.render_resize_handle(window, cx))
             .child(DockElement {
