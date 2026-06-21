@@ -383,9 +383,9 @@ impl Dock {
 
 impl Render for Dock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        if !self.open && !self.placement.is_bottom() {
-            return div();
-        }
+        // A closed dock is not hidden outright: it keeps a thin collapsed strip
+        // (see the size override below) so its title bar — and the expand/contract
+        // toggle button — stay visible and the dock can be re-expanded.
 
         let cache_style = StyleRefinement::default().absolute().size_full();
 
@@ -397,9 +397,13 @@ impl Render for Dock {
                 DockPlacement::Bottom => this.w_full().h(self.size),
                 DockPlacement::Center => unreachable!(),
             })
-            // Bottom Dock should keep the title bar, then user can click the Toggle button
-            .when(!self.open && self.placement.is_bottom(), |this| {
-                this.h(px(29.))
+            // A collapsed dock keeps its title bar (with the toggle button) visible
+            // so it can be re-expanded: bottom collapses to a short horizontal
+            // strip, the sides to a thin vertical strip.
+            .when(!self.open, |this| match self.placement {
+                DockPlacement::Bottom => this.h(px(29.)),
+                DockPlacement::Left | DockPlacement::Right => this.w(px(29.)),
+                DockPlacement::Center => this,
             })
             .map(|this| match &self.panel {
                 DockItem::Split { view, .. } => this.child(view.clone()),
