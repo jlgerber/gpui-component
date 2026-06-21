@@ -9,7 +9,7 @@ mod tiles;
 use anyhow::Result;
 use gpui::{
     AnyElement, AnyView, App, AppContext, Axis, Bounds, Context, Edges, Entity, EntityId,
-    EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    EventEmitter, Global, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
     SharedString, Styled, Subscription, WeakEntity, Window, actions, div, prelude::FluentBuilder,
 };
 use std::sync::Arc;
@@ -28,6 +28,23 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 actions!(dock, [ToggleZoom, ClosePanel]);
+
+/// Process-wide dock edit mode. When off, tab-editing affordances (+ / pop-out /
+/// close x) are hidden. Off by default.
+#[derive(Default, Clone, Copy)]
+pub struct DockEditMode(pub bool);
+impl Global for DockEditMode {}
+
+/// Whether dock edit mode is currently on (default: off).
+pub fn is_edit_mode(cx: &App) -> bool {
+    cx.try_global::<DockEditMode>().map(|m| m.0).unwrap_or(false)
+}
+
+/// Turn dock edit mode on/off and refresh so the tab bars re-render.
+pub fn set_edit_mode(cx: &mut App, on: bool) {
+    cx.set_global(DockEditMode(on));
+    cx.refresh_windows();
+}
 
 pub enum DockEvent {
     /// The layout of the dock has changed, subscribers this to save the layout.
