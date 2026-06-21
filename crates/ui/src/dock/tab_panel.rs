@@ -639,6 +639,22 @@ impl TabPanel {
                 return div().into_any_element();
             }
 
+            // A collapsed SIDE dock is a thin vertical strip: show only the
+            // expand/contract toggle, centered — not the panel label, which would
+            // otherwise fill the strip (`flex_1`/`min_w_16`) and push the toggle
+            // out of view (clipping the right dock's toggle entirely). The bottom
+            // dock keeps its full collapsed title bar (handled below).
+            if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
+                return h_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .children(left_dock_button)
+                    .children(right_dock_button)
+                    .into_any_element();
+            }
+
             let title_style = panel.title_style(cx);
 
             return h_flex()
