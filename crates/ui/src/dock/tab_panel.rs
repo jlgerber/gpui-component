@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    ClosePanel, DockArea, DockPlacement, Panel, PanelControl, PanelEvent, PanelState, PanelStyle,
-    PanelView, StackPanel, ToggleZoom,
+    ClosePanel, DockArea, DockPlacement, Panel, PanelControl, PanelEvent, PanelRegistry,
+    PanelState, PanelStyle, PanelView, StackPanel, ToggleZoom,
 };
 
 #[derive(Clone)]
@@ -280,6 +280,64 @@ impl TabPanel {
         }
         cx.emit(PanelEvent::LayoutChanged);
         cx.notify();
+    }
+
+    /// Add a new tab to THIS tab panel of the same panel kind as the current
+    /// active panel.
+    ///
+    /// The new panel is constructed through the global [`PanelRegistry`] using
+    /// the active panel's `panel_name`, with an empty (`Null`) panel state. If
+    /// the active panel's kind is not registered, this builds an `InvalidPanel`
+    /// placeholder (the registry's documented fallback). Does nothing when there
+    /// is no active panel.
+    fn add_tab_of_active_kind(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Read the active panel's name first, then drop the borrow before we
+        // mutate `self` via `add_panel`.
+        let Some(name) = self
+            .active_panel(cx)
+            .map(|panel| panel.panel_name(cx).to_string())
+        else {
+            return;
+        };
+
+        let dock_area = self.dock_area.clone();
+        let info = PanelInfo::panel(serde_json::Value::Null);
+        let state = PanelState {
+            panel_name: name.clone(),
+            children: vec![],
+            info: info.clone(),
+        };
+
+        let new_panel: Box<dyn PanelView> =
+            PanelRegistry::build_panel(&name, dock_area, &state, &info, window, cx);
+        let panel: Arc<dyn PanelView> = Arc::from(new_panel);
+        self.add_panel(panel, window, cx);
+    }
+
+    /// Render the per-dock "+" button that adds a new tab of the active panel's
+    /// kind to this tab panel. Returns `None` when there is no active panel.
+    fn render_add_tab_button(
+        &self,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Button> {
+        if self.collapsed {
+            return None;
+        }
+        // Only meaningful when there is an active panel to clone the kind of.
+        self.active_panel(cx)?;
+
+        Some(
+            Button::new("add-tab")
+                .icon(IconName::Plus)
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip(t!("Dock.Add Tab"))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.add_tab_of_active_kind(window, cx);
+                })),
+        )
     }
 
     /// Add panel to try to split
@@ -708,6 +766,7 @@ impl TabPanel {
                         .flex_shrink_0()
                         .ml_1()
                         .gap_1()
+                        .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(&state, window, cx))
                         .children(right_dock_button),
                 )
@@ -856,6 +915,7 @@ impl TabPanel {
                             self.active_panel(cx)
                                 .and_then(|panel| panel.title_suffix(window, cx)),
                         )
+                        .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(state, window, cx))
                         .when_some(right_dock_button, |this, btn| this.child(btn)),
                 )
