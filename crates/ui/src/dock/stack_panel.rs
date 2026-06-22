@@ -359,6 +359,9 @@ impl StackPanel {
     }
 
     /// Find the first top right in the stack.
+    // Unused since side docks host their own toggle buttons (see
+    // `update_toggle_button_tab_panels`); kept to stay close to upstream.
+    #[allow(dead_code)]
     pub(super) fn right_top_tab_panel(
         &self,
         check_parent: bool,
@@ -419,7 +422,7 @@ impl Render for StackPanel {
         h_flex()
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().tab_bar)
+            .bg(cx.theme().tokens.tab_bar)
             .child(
                 ResizablePanelGroup::new("stack-panel-group")
                     .with_state(&self.state)

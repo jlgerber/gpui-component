@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    ClosePanel, DockArea, DockPlacement, Panel, PanelControl, PanelEvent, PanelState, PanelStyle,
-    PanelView, StackPanel, ToggleZoom,
+    ClosePanel, DockArea, DockPlacement, Panel, PanelControl, PanelEvent, PanelRegistry,
+    PanelState, PanelStyle, PanelView, StackPanel, ToggleZoom,
 };
 
 #[derive(Clone)]
@@ -58,7 +58,7 @@ impl Render for DragPanel {
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius)
             .text_color(cx.theme().tab_foreground)
-            .bg(cx.theme().tab_active)
+            .bg(cx.theme().tokens.tab_active)
             .opacity(0.75)
             .child(self.panel.title(window, cx))
     }
@@ -282,6 +282,68 @@ impl TabPanel {
         cx.notify();
     }
 
+    /// Add a new tab to THIS tab panel of the same panel kind as the current
+    /// active panel.
+    ///
+    /// The new panel is constructed through the global [`PanelRegistry`] using
+    /// the active panel's `panel_name`, with an empty (`Null`) panel state. If
+    /// the active panel's kind is not registered, this builds an `InvalidPanel`
+    /// placeholder (the registry's documented fallback). Does nothing when there
+    /// is no active panel.
+    fn add_tab_of_active_kind(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Read the active panel's name first, then drop the borrow before we
+        // mutate `self` via `add_panel`.
+        let Some(name) = self
+            .active_panel(cx)
+            .map(|panel| panel.panel_name(cx).to_string())
+        else {
+            return;
+        };
+
+        let dock_area = self.dock_area.clone();
+        let info = PanelInfo::panel(serde_json::Value::Null);
+        let state = PanelState {
+            panel_name: name.clone(),
+            children: vec![],
+            info: info.clone(),
+        };
+
+        let new_panel: Box<dyn PanelView> =
+            PanelRegistry::build_panel(&name, dock_area, &state, &info, window, cx);
+        let panel: Arc<dyn PanelView> = Arc::from(new_panel);
+        self.add_panel(panel, window, cx);
+    }
+
+    /// Render the per-dock "+" button that adds a new tab of the active panel's
+    /// kind to this tab panel. Returns `None` when there is no active panel.
+    fn render_add_tab_button(
+        &self,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Button> {
+        // Only render the add-tab affordance in edit mode.
+        if !crate::dock::is_edit_mode(cx) {
+            return None;
+        }
+        if self.collapsed {
+            return None;
+        }
+        // Only meaningful when there is an active panel to clone the kind of.
+        self.active_panel(cx)?;
+
+        Some(
+            Button::new("add-tab")
+                .icon(IconName::Plus)
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip(t!("Dock.Add Tab"))
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.add_tab_of_active_kind(window, cx);
+                })),
+        )
+    }
+
     /// Add panel to try to split
     pub fn add_panel_at(
         &mut self,
@@ -426,7 +488,10 @@ impl TabPanel {
     ///
     /// E.g. if the parent and self only have one panel, it is not draggable.
     fn draggable(&self, cx: &App) -> bool {
-        !self.is_locked(cx) && !self.is_last_panel(cx)
+        // Dragging a tab relocates it or (drop-on-edge) splits the dock — both
+        // structural changes, so they're gated behind edit mode along with the
+        // +/pop-out/close affordances. Off edit mode, the layout is locked.
+        crate::dock::is_edit_mode(cx) && !self.is_locked(cx) && !self.is_last_panel(cx)
     }
 
     /// Return true if the tab panel is droppable.
@@ -635,6 +700,27 @@ impl TabPanel {
                 return div().into_any_element();
             }
 
+            // A collapsed SIDE dock is a thin vertical strip: show only the
+            // expand/contract toggle, centered — not the panel label, which would
+            // otherwise fill the strip (`flex_1`/`min_w_16`) and push the toggle
+            // out of view (clipping the right dock's toggle entirely). The bottom
+            // dock keeps its full collapsed title bar (handled below).
+            if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
+                // Top-anchored, title-bar-height row so the toggle sits at the TOP
+                // of the collapsed strip (not vertically centered in the full
+                // height), matching where an expanded title bar would be.
+                return h_flex()
+                    .w_full()
+                    .h(px(30.))
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .children(left_dock_button)
+                    .children(right_dock_button)
+                    .into_any_element();
+            }
+
             let title_style = panel.title_style(cx);
 
             return h_flex()
@@ -687,6 +773,7 @@ impl TabPanel {
                         .flex_shrink_0()
                         .ml_1()
                         .gap_1()
+                        .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(&state, window, cx))
                         .children(right_dock_button),
                 )
@@ -720,7 +807,7 @@ impl TabPanel {
                         .border_b_1()
                         .h_full()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tab_bar)
+                        .bg(cx.theme().tokens.tab_bar)
                         .px_2()
                         .children(left_dock_button)
                         .children(bottom_dock_button),
@@ -733,6 +820,14 @@ impl TabPanel {
                 if !panel.visible(cx) {
                     return None;
                 }
+
+                // Per-tab closability: gate the close (x) on the TabPanel's
+                // closable flag AND this specific panel's closable(). The
+                // consumer sets closable = docked_count > 1, so the LAST docked
+                // tab is non-closable and gets no x (min-1 invariant).
+                // The per-tab pop-out/close affordances only render in edit mode.
+                let closable =
+                    crate::dock::is_edit_mode(cx) && self.closable && panel.closable(cx);
 
                 // Always not show active tab style, if the panel is collapsed
                 if self.collapsed {
@@ -751,6 +846,55 @@ impl TabPanel {
                             }
                         })
                         .selected(active)
+                        .when(closable, |this| {
+                            this.suffix(
+                                h_flex()
+                                    .gap_1()
+                                    // Tighten the gap between the tab label and the
+                                    // pop-out button (the Tab row's ~4px gap, cut ~1/3).
+                                    .ml(px(-1.5))
+                                    // Pop-out button (before the close x). Invokes the
+                                    // consumer's Panel::on_pop_out hook; the dock does not
+                                    // remove/float the panel itself.
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "pop-out-tab:{}",
+                                            ix
+                                        )))
+                                        .icon(IconName::ExternalLink)
+                                        .tooltip(t!("Dock.Pop Out"))
+                                        .xsmall()
+                                        .ghost()
+                                        .tab_stop(false)
+                                        .on_click(cx.listener({
+                                            let panel = panel.clone();
+                                            move |_this, _ev, window, cx| {
+                                                // Don't also activate the tab.
+                                                cx.stop_propagation();
+                                                panel.on_pop_out(window, cx);
+                                            }
+                                        })),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "close-tab:{}",
+                                            ix
+                                        )))
+                                        .icon(IconName::Close)
+                                        .xsmall()
+                                        .ghost()
+                                        .tab_stop(false)
+                                        .on_click(cx.listener({
+                                            let panel = panel.clone();
+                                            move |this, _ev, window, cx| {
+                                                // Don't also activate the tab.
+                                                cx.stop_propagation();
+                                                this.remove_panel(panel.clone(), window, cx);
+                                            }
+                                        })),
+                                    ),
+                            )
+                        })
                         .on_click(cx.listener({
                             let is_collapsed = self.collapsed;
                             let dock_area = self.dock_area.clone();
@@ -797,11 +941,11 @@ impl TabPanel {
                 div()
                     .id("tab-bar-empty-space")
                     .h_full()
-                    .flex_grow()
+                    .flex_grow_1()
                     .min_w_16()
                     .when(state.droppable, |this| {
                         this.drag_over::<DragPanel>(|this, _, _, cx| {
-                            this.bg(cx.theme().drop_target)
+                            this.bg(cx.theme().tokens.drop_target)
                         })
                         .on_drop(cx.listener(
                             move |this, drag: &DragPanel, window, cx| {
@@ -828,13 +972,14 @@ impl TabPanel {
                         .border_b_1()
                         .h_full()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tab_bar)
+                        .bg(cx.theme().tokens.tab_bar)
                         .px_2()
                         .gap_1()
                         .children(
                             self.active_panel(cx)
                                 .and_then(|panel| panel.title_suffix(window, cx)),
                         )
+                        .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(state, window, cx))
                         .when_some(right_dock_button, |this, btn| this.child(btn)),
                 )
@@ -881,7 +1026,7 @@ impl TabPanel {
                         div()
                             .invisible()
                             .absolute()
-                            .bg(cx.theme().drop_target)
+                            .bg(cx.theme().tokens.drop_target)
                             .map(|this| match self.will_split_placement {
                                 Some(placement) => {
                                     let size = relative(0.5);
@@ -1207,7 +1352,7 @@ impl Render for TabPanel {
             .tab_group()
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.background)
             .child(self.render_title_bar(&state, window, cx))
             .child(self.render_active_panel(&state, window, cx))
     }

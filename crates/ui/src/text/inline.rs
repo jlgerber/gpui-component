@@ -13,8 +13,8 @@ use gpui::{
 };
 
 use crate::{
-    ActiveTheme, global_state::GlobalState, input::Selection, text::TextViewMultiClickKind,
-    text::node::LinkMark, text::selection::word_range_at,
+    ActiveTheme, WindowExt as _, global_state::GlobalState, input::Selection,
+    text::TextViewMultiClickKind, text::node::LinkMark, text::selection::word_range_at,
 };
 
 /// A inline element used to render a inline text and support selectable.
@@ -110,8 +110,8 @@ impl Inline {
 
         let text_view_state = text_view_state.read(cx);
         let is_selectable = text_view_state.is_selectable();
-        if !text_view_state.has_selection() {
-            return (is_selectable, false, None);
+        if !is_selectable {
+            return (false, false, None);
         }
 
         if text_view_state.is_all_selected() {
@@ -133,10 +133,12 @@ impl Inline {
             );
         }
 
-        let Some((selection_start, selection_end)) = text_view_state.selection_points() else {
+        let Some((selection_start, selection_end)) = text_view_state.selection_points(window, cx)
+        else {
             return (is_selectable, false, None);
         };
         let line_height = window.line_height();
+        let mask_bounds = window.content_mask().bounds;
 
         // Use for debug selection bounds
         // self.paint_selected_bounds(Bounds::from_corners(selection_start, selection_end), window, cx);
@@ -150,29 +152,88 @@ impl Inline {
                 continue;
             };
 
+            let next_offset = offset + c.len_utf8();
             let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(offset + 1) {
+            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
                 if next_pos.y == pos.y {
                     char_width = next_pos.x - pos.x;
                 }
             }
 
-            if point_in_text_selection(pos, char_width, selection_start, selection_end, line_height)
+            let char_center = point(pos.x + char_width.half(), pos.y + line_height.half());
+            if mask_bounds.contains(&char_center)
+                && point_in_text_selection(
+                    pos,
+                    char_width,
+                    selection_start,
+                    selection_end,
+                    line_height,
+                )
             {
                 if selection.is_none() {
                     selection = Some((offset..offset).into());
                 }
 
-                let next_offset = offset + c.len_utf8();
                 if let Some(selection) = selection.as_mut() {
                     selection.end = next_offset;
                 }
             }
 
-            offset += c.len_utf8();
+            offset = next_offset;
         }
 
         (true, true, selection)
+    }
+
+    fn text_line_bounds(
+        &self,
+        text_layout: &TextLayout,
+        line_height: Pixels,
+        mask_bounds: Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        let mut line_bounds = Vec::new();
+        let mut current_line_y = None;
+        let mut current_bounds: Option<Bounds<Pixels>> = None;
+        let mut offset = 0;
+
+        for c in self.text.chars() {
+            let next_offset = offset + c.len_utf8();
+            let Some(pos) = text_layout.position_for_index(offset) else {
+                offset = next_offset;
+                continue;
+            };
+
+            let mut char_width = line_height.half();
+            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
+                if next_pos.y == pos.y {
+                    char_width = next_pos.x - pos.x;
+                }
+            }
+
+            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+                .intersect(&mask_bounds);
+            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                if current_line_y == Some(pos.y) {
+                    if let Some(current) = current_bounds.as_mut() {
+                        *current = current.union(&bounds);
+                    }
+                } else {
+                    if let Some(current) = current_bounds.take() {
+                        line_bounds.push(current);
+                    }
+                    current_line_y = Some(pos.y);
+                    current_bounds = Some(bounds);
+                }
+            }
+
+            offset = next_offset;
+        }
+
+        if let Some(current) = current_bounds {
+            line_bounds.push(current);
+        }
+
+        line_bounds
     }
 
     /// Paint the selection background.
@@ -357,6 +418,20 @@ impl Element for Inline {
         }
 
         if is_selectable {
+            if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+                let text_bounds = self.text_line_bounds(
+                    &text_layout,
+                    text_layout.line_height(),
+                    window.content_mask().bounds,
+                );
+                crate::Root::register_selectable_text_inline(
+                    &text_view_state,
+                    text_bounds,
+                    window,
+                    cx,
+                );
+            }
+
             window.on_mouse_event({
                 let hitbox = hitbox.clone();
                 let text_layout = text_layout.clone();
@@ -437,7 +512,7 @@ impl Element for Inline {
                     }
                     if text_view_state
                         .as_ref()
-                        .is_some_and(|state| state.read(cx).has_selection())
+                        .is_some_and(|state| state.read(cx).has_selection(window, cx))
                     {
                         return;
                     }
@@ -445,6 +520,7 @@ impl Element for Inline {
                     if let Some(link) =
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
+                        window.end_text_selection(cx);
                         cx.stop_propagation();
                         cx.open_url(&link.url);
                     }

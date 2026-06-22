@@ -9,7 +9,7 @@ mod tiles;
 use anyhow::Result;
 use gpui::{
     AnyElement, AnyView, App, AppContext, Axis, Bounds, Context, Edges, Entity, EntityId,
-    EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    EventEmitter, Global, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
     SharedString, Styled, Subscription, WeakEntity, Window, actions, div, prelude::FluentBuilder,
 };
 use std::sync::Arc;
@@ -28,6 +28,23 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 actions!(dock, [ToggleZoom, ClosePanel]);
+
+/// Process-wide dock edit mode. When off, tab-editing affordances (+ / pop-out /
+/// close x) are hidden. Off by default.
+#[derive(Default, Clone, Copy)]
+pub struct DockEditMode(pub bool);
+impl Global for DockEditMode {}
+
+/// Whether dock edit mode is currently on (default: off).
+pub fn is_edit_mode(cx: &App) -> bool {
+    cx.try_global::<DockEditMode>().map(|m| m.0).unwrap_or(false)
+}
+
+/// Turn dock edit mode on/off and refresh so the tab bars re-render.
+pub fn set_edit_mode(cx: &mut App, on: bool) {
+    cx.set_global(DockEditMode(on));
+    cx.refresh_windows();
+}
 
 pub enum DockEvent {
     /// The layout of the dock has changed, subscribers this to save the layout.
@@ -69,6 +86,11 @@ pub struct DockArea {
 
     /// The panel style, default is [`PanelStyle::Default`](PanelStyle::Default).
     pub(crate) panel_style: PanelStyle,
+
+    /// When true, the bottom dock spans the full width of the dock area (sitting
+    /// below the left/center/right row), instead of being nested inside the
+    /// center column between the left and right docks. Default: false.
+    bottom_dock_full_width: bool,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -506,6 +528,9 @@ impl DockItem {
     }
 
     /// Recursively traverses to find the right-most and top-most TabPanel.
+    // Unused since side docks host their own toggle buttons (see
+    // `update_toggle_button_tab_panels`); kept to stay close to upstream.
+    #[allow(dead_code)]
     pub(crate) fn right_top_tab_panel(&self, cx: &App) -> Option<Entity<TabPanel>> {
         match self {
             DockItem::Tabs { view, .. } => Some(view.clone()),
@@ -546,12 +571,25 @@ impl DockArea {
             toggle_button_visible: true,
             locked: false,
             panel_style: PanelStyle::default(),
+            bottom_dock_full_width: false,
             _subscriptions: vec![],
         };
 
         this.subscribe_panel(&stack_panel, window, cx);
 
         this
+    }
+
+    /// Make the bottom dock span the full width of the dock area (below the
+    /// left/center/right row) instead of being confined to the center column.
+    pub fn set_bottom_dock_full_width(&mut self, full_width: bool) {
+        self.bottom_dock_full_width = full_width;
+    }
+
+    /// Builder form of [`set_bottom_dock_full_width`](Self::set_bottom_dock_full_width).
+    pub fn bottom_dock_full_width(mut self, full_width: bool) -> Self {
+        self.bottom_dock_full_width = full_width;
+        self
     }
 
     /// Return the bounds of the dock area.
@@ -1092,19 +1130,26 @@ impl DockArea {
     }
 
     pub fn update_toggle_button_tab_panels(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        // Left toggle button
+        // Each side/bottom dock owns its own toggle (expand/contract) button: the
+        // button is hosted by that dock's own tab panel, so it sits in the dock's
+        // header rather than in the center area. (Previously the left/right toggles
+        // were hosted by the center's top tab panels; bottom already owned its own.)
+
+        // Left toggle button — hosted by the left dock's own tab panel.
         self.toggle_button_panels.left = self
-            .center
-            .left_top_tab_panel(cx)
+            .left_dock
+            .as_ref()
+            .and_then(|dock| dock.read(cx).panel.left_top_tab_panel(cx))
             .map(|view| view.entity_id());
 
-        // Right toggle button
+        // Right toggle button — hosted by the right dock's own tab panel.
         self.toggle_button_panels.right = self
-            .center
-            .right_top_tab_panel(cx)
+            .right_dock
+            .as_ref()
+            .and_then(|dock| dock.read(cx).panel.left_top_tab_panel(cx))
             .map(|view| view.entity_id());
 
-        // Bottom toggle button
+        // Bottom toggle button — hosted by the bottom dock's own tab panel.
         self.toggle_button_panels.bottom = self
             .bottom_dock
             .as_ref()
@@ -1131,6 +1176,50 @@ impl Render for DockArea {
                         DockItem::Tiles { view, .. } => {
                             // render tiles
                             this.child(view.clone())
+                        }
+                        _ if self.bottom_dock_full_width => {
+                            // render dock — bottom dock spans the full width,
+                            // below the left | center | right row.
+                            this.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .h_full()
+                                    // Left | Center | Right row
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            // Left dock
+                                            .when_some(self.left_dock.clone(), |this, dock| {
+                                                this.child(div().flex().flex_none().child(dock))
+                                            })
+                                            // Center
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_1()
+                                                    .flex_col()
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .overflow_hidden()
+                                                            .child(self.render_items(window, cx)),
+                                                    ),
+                                            )
+                                            // Right dock
+                                            .when_some(self.right_dock.clone(), |this, dock| {
+                                                this.child(div().flex().flex_none().child(dock))
+                                            }),
+                                    )
+                                    // Full-width bottom dock
+                                    .when_some(self.bottom_dock.clone(), |this, dock| {
+                                        this.child(dock)
+                                    }),
+                            )
                         }
                         _ => {
                             // render dock

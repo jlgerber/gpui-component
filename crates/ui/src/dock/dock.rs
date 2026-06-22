@@ -357,13 +357,13 @@ impl Dock {
         };
         match self.placement {
             DockPlacement::Left => {
-                let max_size = (area_bounds.size.width - PANEL_MIN_SIZE - right_dock_size)
-                    .max(PANEL_MIN_SIZE);
+                let max_size =
+                    (area_bounds.size.width - PANEL_MIN_SIZE - right_dock_size).max(PANEL_MIN_SIZE);
                 self.size = size.clamp(PANEL_MIN_SIZE, max_size);
             }
             DockPlacement::Right => {
-                let max_size = (area_bounds.size.width - PANEL_MIN_SIZE - left_dock_size)
-                    .max(PANEL_MIN_SIZE);
+                let max_size =
+                    (area_bounds.size.width - PANEL_MIN_SIZE - left_dock_size).max(PANEL_MIN_SIZE);
                 self.size = size.clamp(PANEL_MIN_SIZE, max_size);
             }
             DockPlacement::Bottom => {
@@ -383,9 +383,9 @@ impl Dock {
 
 impl Render for Dock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        if !self.open && !self.placement.is_bottom() {
-            return div();
-        }
+        // A closed dock is not hidden outright: it keeps a thin collapsed strip
+        // (see the size override below) so its title bar — and the expand/contract
+        // toggle button — stay visible and the dock can be re-expanded.
 
         let cache_style = StyleRefinement::default().absolute().size_full();
 
@@ -397,16 +397,34 @@ impl Render for Dock {
                 DockPlacement::Bottom => this.w_full().h(self.size),
                 DockPlacement::Center => unreachable!(),
             })
-            // Bottom Dock should keep the title bar, then user can click the Toggle button
-            .when(!self.open && self.placement.is_bottom(), |this| {
-                this.h(px(29.))
+            // A collapsed dock keeps its title bar (with the toggle button) visible
+            // so it can be re-expanded: bottom collapses to a short horizontal
+            // strip, the sides to a thin vertical strip.
+            .when(!self.open, |this| match self.placement {
+                DockPlacement::Bottom => this.h(px(29.)),
+                DockPlacement::Left | DockPlacement::Right => this.w(px(29.)),
+                DockPlacement::Center => this,
             })
-            .map(|this| match &self.panel {
-                DockItem::Split { view, .. } => this.child(view.clone()),
-                DockItem::Tabs { view, .. } => this.child(view.clone()),
-                DockItem::Panel { view, .. } => this.child(view.clone().view().cached(cache_style)),
-                // Not support to render Tiles and Tile into Dock
-                DockItem::Tiles { .. } => this,
+            .map(|this| {
+                // When collapsed, a `Split` (StackPanel) content would lay out its
+                // child + a resize handle and hide the inner TabPanel's collapse
+                // toggle in the thin strip (you'd have to drag the splitter to see
+                // it). Render the inner TabPanel directly instead, so its toggle
+                // shows. When open, render the full (splittable) StackPanel.
+                if !self.open {
+                    if let Some(tab_panel) = self.panel.left_top_tab_panel(cx) {
+                        return this.child(tab_panel);
+                    }
+                }
+                match &self.panel {
+                    DockItem::Split { view, .. } => this.child(view.clone()),
+                    DockItem::Tabs { view, .. } => this.child(view.clone()),
+                    DockItem::Panel { view, .. } => {
+                        this.child(view.clone().view().cached(cache_style))
+                    }
+                    // Not support to render Tiles and Tile into Dock
+                    DockItem::Tiles { .. } => this,
+                }
             })
             .child(self.render_resize_handle(window, cx))
             .child(DockElement {
