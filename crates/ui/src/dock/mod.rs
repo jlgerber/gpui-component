@@ -106,6 +106,11 @@ pub struct DockArea {
     /// The panel style, default is [`PanelStyle::Default`](PanelStyle::Default).
     pub(crate) panel_style: PanelStyle,
 
+    /// When true, the bottom dock spans the full width of the dock area (sitting
+    /// below the left/center/right row), instead of being nested inside the
+    /// center column between the left and right docks. Default: false.
+    bottom_dock_full_width: bool,
+
     _subscriptions: Vec<Subscription>,
 }
 
@@ -616,12 +621,25 @@ impl DockArea {
             toggle_button_visible: true,
             locked: false,
             panel_style: PanelStyle::default(),
+            bottom_dock_full_width: false,
             _subscriptions: vec![],
         };
 
         this.subscribe_panel(&stack_panel, window, cx);
 
         this
+    }
+
+    /// Make the bottom dock span the full width of the dock area (below the
+    /// left/center/right row) instead of being confined to the center column.
+    pub fn set_bottom_dock_full_width(&mut self, full_width: bool) {
+        self.bottom_dock_full_width = full_width;
+    }
+
+    /// Builder form of [`set_bottom_dock_full_width`](Self::set_bottom_dock_full_width).
+    pub fn bottom_dock_full_width(mut self, full_width: bool) -> Self {
+        self.bottom_dock_full_width = full_width;
+        self
     }
 
     /// Return the bounds of the dock area.
@@ -1210,6 +1228,50 @@ impl Render for DockArea {
                         DockItem::Tiles { view, .. } => {
                             // render tiles
                             this.child(view.clone())
+                        }
+                        _ if self.bottom_dock_full_width => {
+                            // render dock — bottom dock spans the full width,
+                            // below the left | center | right row.
+                            this.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .h_full()
+                                    // Left | Center | Right row
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            // Left dock
+                                            .when_some(self.left_dock.clone(), |this, dock| {
+                                                this.child(div().flex().flex_none().child(dock))
+                                            })
+                                            // Center
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_1()
+                                                    .flex_col()
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .overflow_hidden()
+                                                            .child(self.render_items(window, cx)),
+                                                    ),
+                                            )
+                                            // Right dock
+                                            .when_some(self.right_dock.clone(), |this, dock| {
+                                                this.child(div().flex().flex_none().child(dock))
+                                            }),
+                                    )
+                                    // Full-width bottom dock
+                                    .when_some(self.bottom_dock.clone(), |this, dock| {
+                                        this.child(dock)
+                                    }),
+                            )
                         }
                         _ => {
                             // render dock
