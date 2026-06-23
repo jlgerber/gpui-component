@@ -693,32 +693,35 @@ impl TabPanel {
         let panel_style = dock_area.read(cx).panel_style;
         let visible_panels = self.visible_panels(cx).collect::<Vec<_>>();
 
+        // A collapsed SIDE dock is a thin vertical strip: show only the
+        // expand/contract toggle, centered — REGARDLESS of tab count, so a
+        // collapsed multi-tab side dock shows the toggle (not the active tab's
+        // truncated title). The panel label would otherwise fill the strip
+        // (`flex_1`/`min_w_16`) and push the toggle out of view (clipping the
+        // right dock's toggle entirely). The bottom dock keeps its full collapsed
+        // title bar (handled below). This must run before the single-panel branch
+        // so it applies whether the dock has one tab or many.
+        if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
+            // Top-anchored, title-bar-height row so the toggle sits at the TOP of
+            // the collapsed strip (not vertically centered in the full height),
+            // matching where an expanded title bar would be.
+            return h_flex()
+                .w_full()
+                .h(px(30.))
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .children(left_dock_button)
+                .children(right_dock_button)
+                .into_any_element();
+        }
+
         if visible_panels.len() == 1 && panel_style == PanelStyle::default() {
             let panel = visible_panels.get(0).unwrap();
 
             if !panel.visible(cx) {
                 return div().into_any_element();
-            }
-
-            // A collapsed SIDE dock is a thin vertical strip: show only the
-            // expand/contract toggle, centered — not the panel label, which would
-            // otherwise fill the strip (`flex_1`/`min_w_16`) and push the toggle
-            // out of view (clipping the right dock's toggle entirely). The bottom
-            // dock keeps its full collapsed title bar (handled below).
-            if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
-                // Top-anchored, title-bar-height row so the toggle sits at the TOP
-                // of the collapsed strip (not vertically centered in the full
-                // height), matching where an expanded title bar would be.
-                return h_flex()
-                    .w_full()
-                    .h(px(30.))
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .children(left_dock_button)
-                    .children(right_dock_button)
-                    .into_any_element();
             }
 
             let title_style = panel.title_style(cx);
