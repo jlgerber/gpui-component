@@ -6,7 +6,7 @@ use std::{
 use gpui::{
     Along, AnyElement, App, AppContext, Axis, Bounds, Context, Element, ElementId, Empty, Entity,
     EventEmitter, InteractiveElement as _, IntoElement, IsZero as _, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, RenderOnce, Style, StyleRefinement, Styled, Window, div,
+    ParentElement, Pixels, Render, RenderOnce, Style, StyleRefinement, Styled, Window, div, px,
     prelude::FluentBuilder,
 };
 
@@ -283,6 +283,13 @@ impl RenderOnce for ResizablePanel {
             .get(self.panel_ix)
             .expect("BUG: The `index` of ResizablePanel should be one of in `state`.");
         let size_range = self.size_range.clone();
+        // A collapsed panel must shrink to its strip size, below the normal
+        // PANEL_MIN_SIZE floor. Without lowering the floor here the flex layout
+        // clamps `min_h`/`flex_basis` back up to `size_range.start`, so the
+        // "collapsed" pane keeps rendering its body at ~100 px. We also stop it
+        // growing back into any free space.
+        let collapsed = panel_state.collapsed.is_some();
+        let min_floor = if collapsed { px(0.) } else { size_range.start };
 
         div()
             .id(("resizable-panel", self.panel_ix))
@@ -290,6 +297,7 @@ impl RenderOnce for ResizablePanel {
             .flex_grow_1()
             .size_full()
             .relative()
+            .when(collapsed, |this| this.flex_grow_0())
             // Apply caller style overrides here — between the flex defaults
             // above and the size management below. This lets callers cancel
             // the unconditional `.flex_grow_1()` (via `.flex_none()`, the load-
@@ -299,10 +307,10 @@ impl RenderOnce for ResizablePanel {
             // by `ResizableState`) authoritative.
             .refine_style(&self.style)
             .when(self.axis.is_vertical(), |this| {
-                this.min_h(size_range.start).max_h(size_range.end)
+                this.min_h(min_floor).max_h(size_range.end)
             })
             .when(self.axis.is_horizontal(), |this| {
-                this.min_w(size_range.start).max_w(size_range.end)
+                this.min_w(min_floor).max_w(size_range.end)
             })
             // 1. initial_size is None, to use auto size.
             // 2. initial_size is Some and size is none, to use the initial size of the panel for first time render.
@@ -318,7 +326,7 @@ impl RenderOnce for ResizablePanel {
                 .flex_basis(initial_size)
             })
             .map(|this| match panel_state.size {
-                Some(size) => this.flex_basis(size.min(size_range.end).max(size_range.start)),
+                Some(size) => this.flex_basis(size.min(size_range.end).max(min_floor)),
                 None => this,
             })
             .on_prepaint({
