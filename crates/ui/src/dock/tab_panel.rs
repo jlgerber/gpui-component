@@ -489,6 +489,18 @@ impl TabPanel {
         stack.is_child_collapsed(ix, cx)
     }
 
+    /// True if this panel sits in a real split — its parent `StackPanel` has
+    /// more than one child. False when it's the only panel in its stack (no
+    /// split to collapse) or has no parent stack. Lets consumers show a
+    /// minimize affordance only where collapsing actually does something.
+    pub fn is_in_split(&self, cx: &App) -> bool {
+        self.stack_panel
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|sp| sp.read(cx).panels_len() > 1)
+            .unwrap_or(false)
+    }
+
     fn is_locked(&self, cx: &App) -> bool {
         let Some(dock_area) = self.dock_area.upgrade() else {
             return true;
