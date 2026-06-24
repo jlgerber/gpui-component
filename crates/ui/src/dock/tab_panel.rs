@@ -717,6 +717,8 @@ impl TabPanel {
                         .map(|btn| btn.xsmall().ghost().tab_stop(false)),
                 )
             })
+            // Split collapse/expand sits to the left of the zoom control.
+            .children(self.render_split_collapse_button(window, cx))
             .map(|this| {
                 let value = if zoomed {
                     Some(("zoom-out", IconName::Minimize, t!("Dock.Zoom Out")))
@@ -1008,7 +1010,6 @@ impl TabPanel {
                         .gap_1()
                         .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(&state, window, cx))
-                        .children(self.render_split_collapse_button(window, cx))
                         .children(right_dock_button),
                 )
                 .into_any_element();
@@ -1237,7 +1238,6 @@ impl TabPanel {
                         )
                         .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(state, window, cx))
-                        .children(self.render_split_collapse_button(window, cx))
                         .when_some(right_dock_button, |this, btn| this.child(btn)),
                 )
             })
