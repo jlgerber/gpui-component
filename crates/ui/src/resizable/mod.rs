@@ -294,6 +294,29 @@ impl ResizableState {
             .unwrap_or(false)
     }
 
+    /// Returns the expanded size of panel `ix`: the saved pre-collapse size if collapsed,
+    /// or the current size otherwise. Used by dump to persist the meaningful size.
+    pub fn expanded_size(&self, ix: usize) -> Pixels {
+        self.panels
+            .get(ix)
+            .and_then(|p| p.collapsed)
+            .unwrap_or_else(|| self.sizes.get(ix).copied().unwrap_or(PANEL_MIN_SIZE))
+    }
+
+    /// Mark panel `ix` as collapsed at load time, saving the current `sizes[ix]` as the
+    /// expanded size and shrinking it to `strip`. Unlike `collapse_panel`, this does not
+    /// redistribute sibling sizes (which would require valid bounds) and is safe to call
+    /// before the first render.
+    pub fn mark_collapsed(&mut self, ix: usize, strip: Pixels, cx: &mut Context<Self>) {
+        if ix >= self.sizes.len() || self.panels[ix].collapsed.is_some() {
+            return;
+        }
+        self.panels[ix].collapsed = Some(self.sizes[ix]);
+        self.sizes[ix] = strip;
+        self.panels[ix].size = Some(strip);
+        cx.notify();
+    }
+
     /// Resize the panel at `ix` by treating `ix` as the drag-handle position
     /// (the handle that sits between panel `ix` and panel `ix + 1`). Returns
     /// early on the last panel since there is no handle below it.
@@ -413,26 +436,46 @@ impl ResizableState {
 
     /// Adjust panel sizes according to the container size.
     ///
-    /// When the container size changes, the panels should take up the same percentage as they did before.
+    /// When the container size changes, the panels should take up the same percentage as they did
+    /// before. Collapsed panels keep their strip size; only non-collapsed panels are scaled.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
         if self.container_size().is_zero() {
             return;
         }
 
         let container_size = self.container_size();
+
+        // Guard against degenerate sizes (NaN/inf or all-zero) before dividing.
         let total = self.sizes.iter().map(|s| s.as_f32()).sum::<f32>();
         if !total.is_finite() || total <= 0. {
             return;
         }
-        let total_size = px(total);
+
+        // Collapsed panels retain their strip size; distribute the remaining space.
+        let collapsed_total: f32 = self
+            .panels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.collapsed.is_some().then(|| self.sizes[i].as_f32()))
+            .sum();
+        let available = (container_size.as_f32() - collapsed_total).max(0.);
+        let non_collapsed_total: f32 = self
+            .sizes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.panels[*i].collapsed.is_none())
+            .map(|(_, s)| s.as_f32())
+            .sum::<f32>()
+            .max(1.);
 
         for i in 0..self.panels.len() {
-            let size = self.sizes[i];
-            let ratio = size / total_size;
-            let new_size = container_size * ratio;
-
-            self.sizes[i] = new_size;
-            self.panels[i].size = Some(new_size);
+            if self.panels[i].collapsed.is_some() {
+                self.panels[i].size = Some(self.sizes[i]);
+            } else {
+                let new_size = px(available * (self.sizes[i].as_f32() / non_collapsed_total));
+                self.sizes[i] = new_size;
+                self.panels[i].size = Some(new_size);
+            }
         }
         cx.notify();
     }
