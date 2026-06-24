@@ -42,13 +42,18 @@ impl Panel for StackPanel {
         }
     }
     fn dump(&self, cx: &App) -> PanelState {
-        let sizes = self.state.read(cx).sizes().clone();
+        let resizable = self.state.read(cx);
+        let sizes: Vec<Pixels> = (0..self.panels.len())
+            .map(|ix| resizable.expanded_size(ix))
+            .collect();
+        let collapsed: Vec<bool> = (0..self.panels.len())
+            .map(|ix| resizable.is_collapsed(ix))
+            .collect();
         let mut state = PanelState::new(self);
         for panel in &self.panels {
             state.add_child(panel.dump(cx));
-            state.info = PanelInfo::stack(sizes.clone(), self.axis);
         }
-
+        state.info = PanelInfo::stack(sizes, self.axis, collapsed);
         state
     }
 }
@@ -446,6 +451,23 @@ impl StackPanel {
     /// Used by [`TabPanel::is_collapsed_in_parent`] where only `&App` is available.
     pub fn index_of_entity_id(&self, entity_id: EntityId, cx: &App) -> Option<usize> {
         self.panels.iter().position(|p| p.panel_id(cx) == entity_id)
+    }
+
+    /// Return the expanded size of child `ix`: the saved pre-collapse size if collapsed,
+    /// or the current size otherwise.
+    pub fn child_expanded_size(&self, ix: usize, cx: &App) -> Pixels {
+        self.state.read(cx).expanded_size(ix)
+    }
+
+    /// Mark child `ix` as collapsed at load time without redistributing sibling sizes.
+    ///
+    /// Safe to call before the first render (does not rely on panel bounds). The saved
+    /// expanded size is the value currently in the resizable state for that slot, so
+    /// callers must load with expanded sizes before calling this.
+    pub fn mark_child_collapsed(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.mark_collapsed(ix, Self::COLLAPSED_STRIP, cx);
+        });
     }
 }
 
