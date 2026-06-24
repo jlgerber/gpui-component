@@ -748,12 +748,11 @@ impl TabPanel {
         Some(
             Button::new("toggle-split-collapse")
                 .icon(if collapsed {
-                    // Expanded chevrons read as "open this back up".
+                    // Outward chevrons read as "open this back up".
                     IconName::ChevronsUpDown
                 } else {
-                    // `Minus` is the minimize glyph; `Minimize` is already the
-                    // dock's zoom-out icon, so reusing it would be ambiguous.
-                    IconName::Minus
+                    // Inward chevrons read as "collapse this down".
+                    IconName::ChevronsDownUp
                 })
                 .xsmall()
                 .ghost()
