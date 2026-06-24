@@ -12,7 +12,7 @@ use crate::{
 
 use super::{DockArea, Panel, PanelEvent, PanelState, PanelView, TabPanel};
 use gpui::{
-    App, AppContext as _, Axis, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    App, AppContext as _, Axis, Context, DismissEvent, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, WeakEntity,
     Window, px,
 };
@@ -439,6 +439,13 @@ impl StackPanel {
     /// [`index_of_panel`](Self::index_of_panel).
     pub fn child_index_of(&self, panel: &Arc<dyn PanelView>) -> Option<usize> {
         self.panels.iter().position(|p| p == panel)
+    }
+
+    /// Return the index of the panel whose entity id matches `entity_id`, or `None`.
+    ///
+    /// Used by [`TabPanel::is_collapsed_in_parent`] where only `&App` is available.
+    pub fn index_of_entity_id(&self, entity_id: EntityId, cx: &App) -> Option<usize> {
+        self.panels.iter().position(|p| p.panel_id(cx) == entity_id)
     }
 }
 

@@ -139,6 +139,8 @@ pub struct TabPanel {
     dock_area: WeakEntity<DockArea>,
     /// The stock_panel can be None, if is None, that means the panels can't be split or move
     stack_panel: Option<WeakEntity<StackPanel>>,
+    /// This panel's own entity id, used to locate self in parent without Context<Self>.
+    entity_id: EntityId,
     pub(crate) panels: Vec<Arc<dyn PanelView>>,
     pub(crate) active_ix: usize,
     /// What each panel was last told via `set_active`, keyed by EntityId; absent means `false`.
@@ -247,6 +249,7 @@ impl TabPanel {
             focus_handle: cx.focus_handle(),
             dock_area,
             stack_panel,
+            entity_id: cx.entity().entity_id(),
             panels: Vec::new(),
             active_ix: 0,
             notified_active: HashMap::new(),
@@ -573,6 +576,48 @@ impl TabPanel {
         self.collapsed = collapsed;
         self.schedule_active_sync(window, cx);
         cx.notify();
+    }
+
+    /// Collapse this panel's slot in its parent `StackPanel`.
+    ///
+    /// No-ops when this panel has no parent stack (e.g. single-panel layout).
+    pub fn collapse_in_parent(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let self_arc: std::sync::Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(ix) = stack_panel.read(cx).child_index_of(&self_arc) else {
+            return;
+        };
+        stack_panel.update(cx, |sp, cx| sp.collapse_child(ix, window, cx));
+    }
+
+    /// Expand this panel's slot in its parent `StackPanel`.
+    ///
+    /// No-ops when this panel has no parent stack.
+    pub fn expand_in_parent(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let self_arc: std::sync::Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(ix) = stack_panel.read(cx).child_index_of(&self_arc) else {
+            return;
+        };
+        stack_panel.update(cx, |sp, cx| sp.expand_child(ix, window, cx));
+    }
+
+    /// Return `true` if this panel's slot in its parent `StackPanel` is collapsed.
+    ///
+    /// Returns `false` when there is no parent stack.
+    pub fn is_collapsed_in_parent(&self, cx: &App) -> bool {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return false;
+        };
+        let stack = stack_panel.read(cx);
+        let Some(ix) = stack.index_of_entity_id(self.entity_id, cx) else {
+            return false;
+        };
+        stack.is_child_collapsed(ix, cx)
     }
 
     fn is_locked(&self, cx: &App) -> bool {
