@@ -863,6 +863,44 @@ impl TabPanel {
         )
     }
 
+    /// Minimize/expand this panel's slot within its parent split. Shown only on
+    /// a real split pane (parent stack with >1 child). Reads the parent stack
+    /// (an ancestor entity) + `self`'s own fields — safe during render; it never
+    /// reads `self` the entity (which would reentrancy-panic mid-render).
+    fn render_split_collapse_button(
+        &self,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Button> {
+        if self.zoomed || !self.is_in_split(cx) {
+            return None;
+        }
+        let collapsed = self.is_collapsed_in_parent(cx);
+        Some(
+            Button::new("toggle-split-collapse")
+                .icon(if collapsed {
+                    IconName::ChevronsUpDown
+                } else {
+                    IconName::Minimize
+                })
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip(if collapsed {
+                    t!("Dock.Expand")
+                } else {
+                    t!("Dock.Collapse")
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.is_collapsed_in_parent(cx) {
+                        this.expand_in_parent(window, cx);
+                    } else {
+                        this.collapse_in_parent(window, cx);
+                    }
+                })),
+        )
+    }
+
     fn render_title_bar(
         &mut self,
         state: &TabState,
@@ -968,6 +1006,7 @@ impl TabPanel {
                         .gap_1()
                         .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(&state, window, cx))
+                        .children(self.render_split_collapse_button(window, cx))
                         .children(right_dock_button),
                 )
                 .into_any_element();
@@ -1196,6 +1235,7 @@ impl TabPanel {
                         )
                         .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(state, window, cx))
+                        .children(self.render_split_collapse_button(window, cx))
                         .when_some(right_dock_button, |this, btn| this.child(btn)),
                 )
             })
