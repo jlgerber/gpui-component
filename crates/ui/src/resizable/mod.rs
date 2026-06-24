@@ -684,4 +684,71 @@ mod tests {
             assert!(!state_entity.read(cx).is_collapsed(1));
         });
     }
+
+    /// Render-level regression: a collapsed panel must actually shrink to its
+    /// strip size in layout, not just in `sizes`. The collapse math lives in
+    /// `ResizableState`, but the flex floor (`min_w`/`min_h` + `flex_basis`)
+    /// is applied in `ResizablePanel::render`. Without a collapsed-floor
+    /// override there, the layout clamped the pane back up to `PANEL_MIN_SIZE`
+    /// (≈100 px) — so the "collapsed" pane kept rendering its body even though
+    /// `sizes[ix]` was 28. This test draws a real split and asserts the
+    /// collapsed panel's rendered bounds are ~28 px (it was ≥100 pre-fix).
+    #[gpui::test]
+    fn test_collapsed_panel_renders_at_strip_size(cx: &mut TestAppContext) {
+        use gpui::{IntoElement, ParentElement as _, Render, Styled as _, VisualTestContext, div};
+
+        cx.update(crate::init);
+
+        // Build the shared state up front (2 × 300 px in a 600 × 400 container)
+        // so we can read panel bounds back after rendering.
+        let state_entity = cx.update(|cx| make_two_panel_state(cx));
+
+        struct CollapseRenderRoot {
+            state: Entity<ResizableState>,
+        }
+        impl Render for CollapseRenderRoot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(600.)).h(px(400.)).child(
+                    h_resizable("collapse-render-test")
+                        .with_state(&self.state)
+                        .child(resizable_panel().child(div().child("left")))
+                        .child(resizable_panel().child(div().child("right"))),
+                )
+            }
+        }
+
+        let state_for_root = state_entity.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| CollapseRenderRoot {
+                state: state_for_root,
+            });
+            crate::Root::new(content, window, cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        // First draw establishes panel bounds at the expanded sizes.
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        // Collapse the right panel to a 28 px strip and redraw.
+        cx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(1, px(28.), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let width = cx.update(|_, cx| state_entity.read(cx).panels[1].bounds.size.width);
+        assert!(
+            width.as_f32() < 40.0,
+            "collapsed panel should render at ~28 px, got {:?} (the flex floor \
+             clamped it to PANEL_MIN_SIZE before the fix)",
+            width
+        );
+    }
 }
