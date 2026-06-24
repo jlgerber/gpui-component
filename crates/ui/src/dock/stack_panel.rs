@@ -12,9 +12,9 @@ use crate::{
 
 use super::{DockArea, Panel, PanelEvent, PanelState, PanelView, TabPanel};
 use gpui::{
-    App, AppContext as _, Axis, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    App, AppContext as _, Axis, Context, DismissEvent, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Subscription, WeakEntity,
-    Window,
+    Window, px,
 };
 use smallvec::SmallVec;
 
@@ -42,13 +42,18 @@ impl Panel for StackPanel {
         }
     }
     fn dump(&self, cx: &App) -> PanelState {
-        let sizes = self.state.read(cx).sizes().clone();
+        let resizable = self.state.read(cx);
+        let sizes: Vec<Pixels> = (0..self.panels.len())
+            .map(|ix| resizable.expanded_size(ix))
+            .collect();
+        let collapsed: Vec<bool> = (0..self.panels.len())
+            .map(|ix| resizable.is_collapsed(ix))
+            .collect();
         let mut state = PanelState::new(self);
         for panel in &self.panels {
             state.add_child(panel.dump(cx));
-            state.info = PanelInfo::stack(sizes.clone(), self.axis);
         }
-
+        state.info = PanelInfo::stack(sizes, self.axis, collapsed);
         state
     }
 }
@@ -407,6 +412,62 @@ impl StackPanel {
     pub(super) fn set_axis(&mut self, axis: Axis, _: &mut Window, cx: &mut Context<Self>) {
         self.axis = axis;
         cx.notify();
+    }
+
+    /// The strip size (width or height) used when a child is collapsed.
+    pub(crate) const COLLAPSED_STRIP: Pixels = px(28.);
+
+    /// Collapse the child panel at `ix` to a narrow strip.
+    ///
+    /// The child retains its identity; only the resizable state is updated.
+    pub fn collapse_child(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.collapse_panel(ix, Self::COLLAPSED_STRIP, window, cx);
+        });
+    }
+
+    /// Expand the child panel at `ix` back to its previous size.
+    pub fn expand_child(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.expand_panel(ix, window, cx);
+        });
+    }
+
+    /// Return `true` if the child panel at `ix` is currently collapsed.
+    pub fn is_child_collapsed(&self, ix: usize, cx: &App) -> bool {
+        self.state.read(cx).is_collapsed(ix)
+    }
+
+    /// Return the index of `panel` within this stack, or `None` if not found.
+    ///
+    /// Identity is the same `Arc<dyn PanelView>` pointer equality used by
+    /// [`index_of_panel`](Self::index_of_panel).
+    pub fn child_index_of(&self, panel: &Arc<dyn PanelView>) -> Option<usize> {
+        self.panels.iter().position(|p| p == panel)
+    }
+
+    /// Return the index of the panel whose entity id matches `entity_id`, or `None`.
+    ///
+    /// Used by [`TabPanel::is_collapsed_in_parent`] where only `&App` is available.
+    pub fn index_of_entity_id(&self, entity_id: EntityId, cx: &App) -> Option<usize> {
+        self.panels.iter().position(|p| p.panel_id(cx) == entity_id)
+    }
+
+    /// Return the expanded size of child `ix`: the saved pre-collapse size if collapsed,
+    /// or the current size otherwise.
+    pub fn child_expanded_size(&self, ix: usize, cx: &App) -> Pixels {
+        self.state.read(cx).expanded_size(ix)
+    }
+
+    /// Mark child `ix` as collapsed at load time without redistributing sibling sizes.
+    ///
+    /// Safe to call before the first render (does not rely on panel bounds). The saved
+    /// expanded size is the value currently in the resizable state for that slot, so
+    /// callers must load with expanded sizes before calling this.
+    pub fn mark_child_collapsed(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.mark_collapsed(ix, Self::COLLAPSED_STRIP, cx);
+        });
     }
 }
 

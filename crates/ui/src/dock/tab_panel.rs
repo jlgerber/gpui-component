@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, App, AppContext, Context, DismissEvent, Div, DragMoveEvent, Empty, Entity,
+    Anchor, App, AppContext, Context, DismissEvent, Div, DragMoveEvent, Empty, Entity, EntityId,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement,
     Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, StyleRefinement,
     Styled, WeakEntity, Window, div, prelude::FluentBuilder, px, relative, rems,
@@ -69,6 +69,8 @@ pub struct TabPanel {
     dock_area: WeakEntity<DockArea>,
     /// The stock_panel can be None, if is None, that means the panels can't be split or move
     stack_panel: Option<WeakEntity<StackPanel>>,
+    /// This panel's own entity id, used to locate self in parent without Context<Self>.
+    entity_id: EntityId,
     pub(crate) panels: Vec<Arc<dyn PanelView>>,
     pub(crate) active_ix: usize,
     /// If this is true, the Panel closable will follow the active panel's closable,
@@ -170,6 +172,7 @@ impl TabPanel {
             focus_handle: cx.focus_handle(),
             dock_area,
             stack_panel,
+            entity_id: cx.entity().entity_id(),
             panels: Vec::new(),
             active_ix: 0,
             tab_bar_scroll_handle: ScrollHandle::new(),
@@ -444,6 +447,60 @@ impl TabPanel {
         cx.notify();
     }
 
+    /// Collapse this panel's slot in its parent `StackPanel`.
+    ///
+    /// No-ops when this panel has no parent stack (e.g. single-panel layout).
+    pub fn collapse_in_parent(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let self_arc: std::sync::Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(ix) = stack_panel.read(cx).child_index_of(&self_arc) else {
+            return;
+        };
+        stack_panel.update(cx, |sp, cx| sp.collapse_child(ix, window, cx));
+    }
+
+    /// Expand this panel's slot in its parent `StackPanel`.
+    ///
+    /// No-ops when this panel has no parent stack.
+    pub fn expand_in_parent(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let self_arc: std::sync::Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(ix) = stack_panel.read(cx).child_index_of(&self_arc) else {
+            return;
+        };
+        stack_panel.update(cx, |sp, cx| sp.expand_child(ix, window, cx));
+    }
+
+    /// Return `true` if this panel's slot in its parent `StackPanel` is collapsed.
+    ///
+    /// Returns `false` when there is no parent stack.
+    pub fn is_collapsed_in_parent(&self, cx: &App) -> bool {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return false;
+        };
+        let stack = stack_panel.read(cx);
+        let Some(ix) = stack.index_of_entity_id(self.entity_id, cx) else {
+            return false;
+        };
+        stack.is_child_collapsed(ix, cx)
+    }
+
+    /// True if this panel sits in a real split — its parent `StackPanel` has
+    /// more than one child. False when it's the only panel in its stack (no
+    /// split to collapse) or has no parent stack. Lets consumers show a
+    /// minimize affordance only where collapsing actually does something.
+    pub fn is_in_split(&self, cx: &App) -> bool {
+        self.stack_panel
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|sp| sp.read(cx).panels_len() > 1)
+            .unwrap_or(false)
+    }
+
     fn is_locked(&self, cx: &App) -> bool {
         let Some(dock_area) = self.dock_area.upgrade() else {
             return true;
@@ -525,6 +582,8 @@ impl TabPanel {
                         .map(|btn| btn.xsmall().ghost().tab_stop(false)),
                 )
             })
+            // Split collapse/expand sits to the left of the zoom control.
+            .children(self.render_split_collapse_button(window, cx))
             .map(|this| {
                 let value = if zoomed {
                     Some(("zoom-out", IconName::Minimize, t!("Dock.Zoom Out")))
@@ -666,6 +725,46 @@ impl TabPanel {
                         _ = dock_area.update(cx, |dock_area, cx| {
                             dock_area.toggle_dock(placement, window, cx);
                         });
+                    }
+                })),
+        )
+    }
+
+    /// Minimize/expand this panel's slot within its parent split. Shown only on
+    /// a real split pane (parent stack with >1 child). Reads the parent stack
+    /// (an ancestor entity) + `self`'s own fields — safe during render; it never
+    /// reads `self` the entity (which would reentrancy-panic mid-render).
+    fn render_split_collapse_button(
+        &self,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Button> {
+        if self.zoomed || !self.is_in_split(cx) {
+            return None;
+        }
+        let collapsed = self.is_collapsed_in_parent(cx);
+        Some(
+            Button::new("toggle-split-collapse")
+                .icon(if collapsed {
+                    // Outward chevrons read as "open this back up".
+                    IconName::ChevronsUpDown
+                } else {
+                    // Inward chevrons read as "collapse this down".
+                    IconName::ChevronsDownUp
+                })
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip(if collapsed {
+                    t!("Dock.Expand")
+                } else {
+                    t!("Dock.Collapse")
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.is_collapsed_in_parent(cx) {
+                        this.expand_in_parent(window, cx);
+                    } else {
+                        this.collapse_in_parent(window, cx);
                     }
                 })),
         )

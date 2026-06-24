@@ -223,6 +223,100 @@ impl ResizableState {
         }
     }
 
+    /// Collapse panel `ix` to a thin strip of `strip` pixels, saving its
+    /// current size for later restoration with [`Self::expand_panel`].
+    ///
+    /// The freed space is redistributed to siblings exactly as a drag would,
+    /// but the strip size may go below [`PANEL_MIN_SIZE`] (the normal minimum
+    /// is bypassed for the collapse target only).
+    ///
+    /// Out-of-range indices and already-collapsed panels are no-ops.
+    pub fn collapse_panel(
+        &mut self,
+        ix: usize,
+        strip: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ix >= self.sizes.len() {
+            return;
+        }
+        if self.panels[ix].collapsed.is_some() {
+            return;
+        }
+        // Save the current expanded size before modifying it.
+        self.panels[ix].collapsed = Some(self.sizes[ix]);
+
+        if ix + 1 < self.sizes.len() {
+            // Non-last panel: resize it directly, allowing below-min.
+            self.resize_panel_at_handle_inner(ix, strip, Some(ix), window, cx);
+        } else if ix > 0 {
+            // Last panel: drive via the previous handle, mirroring resize_panel.
+            // The collapse_target tells the inner fn that panel `ix` (the last)
+            // may shrink below its size_range minimum.
+            let delta = self.sizes[ix] - strip;
+            let prev = self.sizes[ix - 1];
+            self.resize_panel_at_handle_inner(ix - 1, prev + delta, Some(ix), window, cx);
+        }
+        // (degenerate single-panel split: nothing to redistribute)
+        self.done_resizing(cx);
+    }
+
+    /// Restore panel `ix` to its size before collapse.
+    ///
+    /// No-op if the panel is not collapsed or the index is out of range.
+    /// Uses the normal [`Self::resize_panel`] path so siblings shrink back
+    /// and the restored size is clamped to `size_range`.
+    pub fn expand_panel(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.panels.get(ix) else {
+            return;
+        };
+        let Some(saved) = panel.collapsed else {
+            return;
+        };
+        // Clear before resize so is_collapsed() returns false immediately.
+        self.panels[ix].collapsed = None;
+        self.resize_panel(ix, saved, window, cx);
+    }
+
+    /// Returns `true` if panel `ix` is currently collapsed.
+    ///
+    /// Out-of-range indices return `false`.
+    pub fn is_collapsed(&self, ix: usize) -> bool {
+        self.panels
+            .get(ix)
+            .map(|p| p.collapsed.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Returns the expanded size of panel `ix`: the saved pre-collapse size if collapsed,
+    /// or the current size otherwise. Used by dump to persist the meaningful size.
+    pub fn expanded_size(&self, ix: usize) -> Pixels {
+        self.panels
+            .get(ix)
+            .and_then(|p| p.collapsed)
+            .unwrap_or_else(|| self.sizes.get(ix).copied().unwrap_or(PANEL_MIN_SIZE))
+    }
+
+    /// Mark panel `ix` as collapsed at load time, saving the current `sizes[ix]` as the
+    /// expanded size and shrinking it to `strip`. Unlike `collapse_panel`, this does not
+    /// redistribute sibling sizes (which would require valid bounds) and is safe to call
+    /// before the first render.
+    pub fn mark_collapsed(&mut self, ix: usize, strip: Pixels, cx: &mut Context<Self>) {
+        if ix >= self.sizes.len() || self.panels[ix].collapsed.is_some() {
+            return;
+        }
+        self.panels[ix].collapsed = Some(self.sizes[ix]);
+        self.sizes[ix] = strip;
+        self.panels[ix].size = Some(strip);
+        cx.notify();
+    }
+
     /// Resize the panel at `ix` by treating `ix` as the drag-handle position
     /// (the handle that sits between panel `ix` and panel `ix + 1`). Returns
     /// early on the last panel since there is no handle below it.
@@ -233,6 +327,22 @@ impl ResizableState {
         &mut self,
         ix: usize,
         size: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resize_panel_at_handle_inner(ix, size, None, window, cx);
+    }
+
+    /// Inner resize worker.
+    ///
+    /// `collapse_target` names a panel index that is allowed to shrink below
+    /// its `size_range.start` (used by [`Self::collapse_panel`] to permit
+    /// sub-[`PANEL_MIN_SIZE`] strip sizes). Pass `None` for normal drags.
+    fn resize_panel_at_handle_inner(
+        &mut self,
+        ix: usize,
+        size: Pixels,
+        collapse_target: Option<usize>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -252,7 +362,14 @@ impl ResizableState {
         }
 
         let size_range = self.panel_size_range(ix);
-        let new_size = size.clamp(size_range.start, size_range.end);
+        // For the collapse target, allow the floor to be px(0.) so the strip
+        // can go below the panel's normal minimum.
+        let min_for_main = if collapse_target == Some(ix) {
+            px(0.)
+        } else {
+            size_range.start
+        };
+        let new_size = size.clamp(min_for_main, size_range.end);
         let is_expand = move_changed > px(0.);
 
         let main_ix = ix;
@@ -265,7 +382,13 @@ impl ResizableState {
             while changed > px(0.) && ix < old_sizes.len() - 1 {
                 ix += 1;
                 let size_range = self.panel_size_range(ix);
-                let available_size = (new_sizes[ix] - size_range.start).max(px(0.));
+                // If this sibling is the collapse target, it can shrink to 0.
+                let min_for_ix = if collapse_target == Some(ix) {
+                    px(0.)
+                } else {
+                    size_range.start
+                };
+                let available_size = (new_sizes[ix] - min_for_ix).max(px(0.));
                 let to_reduce = changed.min(available_size);
                 new_sizes[ix] -= to_reduce;
                 changed -= to_reduce;
@@ -277,7 +400,12 @@ impl ResizableState {
             while changed > px(0.) && ix > 0 {
                 ix -= 1;
                 let size_range = self.panel_size_range(ix);
-                let available_size = (new_sizes[ix] - size_range.start).max(px(0.));
+                let min_for_ix = if collapse_target == Some(ix) {
+                    px(0.)
+                } else {
+                    size_range.start
+                };
+                let available_size = (new_sizes[ix] - min_for_ix).max(px(0.));
                 let to_reduce = changed.min(available_size);
                 changed -= to_reduce;
                 new_sizes[ix] -= to_reduce;
@@ -286,11 +414,16 @@ impl ResizableState {
             new_sizes[main_ix + 1] += old_sizes[main_ix] - size - changed;
         }
 
-        // If total size exceeds container size, adjust the main panel
+        // If total size exceeds container size, adjust the main panel.
         let total_size: Pixels = new_sizes.iter().map(|s| s.as_f32()).sum::<f32>().into();
         if total_size > container_size {
             let overflow = total_size - container_size;
-            new_sizes[main_ix] = (new_sizes[main_ix] - overflow).max(size_range.start);
+            let floor = if collapse_target == Some(main_ix) {
+                px(0.)
+            } else {
+                size_range.start
+            };
+            new_sizes[main_ix] = (new_sizes[main_ix] - overflow).max(floor);
         }
 
         for (i, _) in old_sizes.iter().enumerate() {
@@ -303,22 +436,40 @@ impl ResizableState {
 
     /// Adjust panel sizes according to the container size.
     ///
-    /// When the container size changes, the panels should take up the same percentage as they did before.
+    /// When the container size changes, the panels should take up the same percentage as they did
+    /// before. Collapsed panels keep their strip size; only non-collapsed panels are scaled.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
         if self.container_size().is_zero() {
             return;
         }
 
         let container_size = self.container_size();
-        let total_size = px(self.sizes.iter().map(|s| s.as_f32()).sum::<f32>());
+
+        // Collapsed panels retain their strip size; distribute the remaining space.
+        let collapsed_total: f32 = self
+            .panels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.collapsed.is_some().then(|| self.sizes[i].as_f32()))
+            .sum();
+        let available = (container_size.as_f32() - collapsed_total).max(0.);
+        let non_collapsed_total: f32 = self
+            .sizes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.panels[*i].collapsed.is_none())
+            .map(|(_, s)| s.as_f32())
+            .sum::<f32>()
+            .max(1.);
 
         for i in 0..self.panels.len() {
-            let size = self.sizes[i];
-            let ratio = size / total_size;
-            let new_size = container_size * ratio;
-
-            self.sizes[i] = new_size;
-            self.panels[i].size = Some(new_size);
+            if self.panels[i].collapsed.is_some() {
+                self.panels[i].size = Some(self.sizes[i]);
+            } else {
+                let new_size = px(available * (self.sizes[i].as_f32() / non_collapsed_total));
+                self.sizes[i] = new_size;
+                self.panels[i].size = Some(new_size);
+            }
         }
         cx.notify();
     }
@@ -331,4 +482,267 @@ pub(crate) struct ResizablePanelState {
     pub size: Option<Pixels>,
     pub size_range: Range<Pixels>,
     bounds: Bounds<Pixels>,
+    /// Saved expanded size when the panel is collapsed; `None` means not collapsed.
+    pub(crate) collapsed: Option<Pixels>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, Bounds, Entity, Point, Size, TestAppContext};
+
+    /// Build a `ResizableState` with two equal horizontal panels of 300 px each
+    /// inside a 600 × 400 container. Panel bounds are set so that
+    /// `sync_real_panel_sizes` reads back the correct initial sizes.
+    fn make_two_panel_state(cx: &mut gpui::App) -> Entity<ResizableState> {
+        let panel_size = px(300.);
+        cx.new(|_| ResizableState {
+            axis: Axis::Horizontal,
+            panels: vec![
+                ResizablePanelState {
+                    size: Some(panel_size),
+                    size_range: PANEL_MIN_SIZE..Pixels::MAX,
+                    bounds: Bounds {
+                        origin: Point::default(),
+                        size: Size {
+                            width: panel_size,
+                            height: px(400.),
+                        },
+                    },
+                    collapsed: None,
+                },
+                ResizablePanelState {
+                    size: Some(panel_size),
+                    size_range: PANEL_MIN_SIZE..Pixels::MAX,
+                    bounds: Bounds {
+                        origin: Point {
+                            x: panel_size,
+                            y: px(0.),
+                        },
+                        size: Size {
+                            width: panel_size,
+                            height: px(400.),
+                        },
+                    },
+                    collapsed: None,
+                },
+            ],
+            sizes: vec![panel_size, panel_size],
+            resizing_panel_ix: None,
+            bounds: Bounds {
+                origin: Point::default(),
+                size: Size {
+                    width: px(600.),
+                    height: px(400.),
+                },
+            },
+        })
+    }
+
+    /// Collapse the last panel (index 1) and verify sizes and is_collapsed.
+    /// Then expand and verify restoration.
+    #[gpui::test]
+    fn test_collapse_and_expand_last_panel(cx: &mut TestAppContext) {
+        let vcx = cx.add_empty_window();
+        let state_entity = vcx.update(|_, cx| make_two_panel_state(cx));
+
+        // Collapse panel 1 to a 28 px strip.
+        vcx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(1, px(28.), window, cx);
+            });
+        });
+
+        vcx.update(|_, cx| {
+            let sizes = state_entity.read(cx).sizes().clone();
+            assert!(
+                (sizes[0].as_f32() - 572.0).abs() < 1.0,
+                "expected sizes[0] ≈ 572, got {:?}",
+                sizes[0]
+            );
+            assert!(
+                (sizes[1].as_f32() - 28.0).abs() < 1.0,
+                "expected sizes[1] ≈ 28, got {:?}",
+                sizes[1]
+            );
+            assert!(
+                state_entity.read(cx).is_collapsed(1),
+                "panel 1 should be marked collapsed"
+            );
+        });
+
+        // Expand panel 1 back to its saved size.
+        vcx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.expand_panel(1, window, cx);
+            });
+        });
+
+        vcx.update(|_, cx| {
+            let sizes = state_entity.read(cx).sizes().clone();
+            // Tolerance of 2 px covers any floating-point rounding.
+            assert!(
+                (sizes[0].as_f32() - 300.0).abs() < 2.0,
+                "expected sizes[0] ≈ 300, got {:?}",
+                sizes[0]
+            );
+            assert!(
+                (sizes[1].as_f32() - 300.0).abs() < 2.0,
+                "expected sizes[1] ≈ 300, got {:?}",
+                sizes[1]
+            );
+            assert!(
+                !state_entity.read(cx).is_collapsed(1),
+                "panel 1 should be expanded"
+            );
+        });
+    }
+
+    /// Collapsing the first panel (index 0) must give its freed space to the
+    /// right sibling (panel 1).
+    #[gpui::test]
+    fn test_collapse_first_panel(cx: &mut TestAppContext) {
+        let vcx = cx.add_empty_window();
+        let state_entity = vcx.update(|_, cx| make_two_panel_state(cx));
+
+        vcx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(0, px(28.), window, cx);
+            });
+        });
+
+        vcx.update(|_, cx| {
+            let sizes = state_entity.read(cx).sizes().clone();
+            assert!(
+                (sizes[0].as_f32() - 28.0).abs() < 1.0,
+                "expected sizes[0] ≈ 28, got {:?}",
+                sizes[0]
+            );
+            assert!(
+                (sizes[1].as_f32() - 572.0).abs() < 1.0,
+                "expected sizes[1] ≈ 572, got {:?}",
+                sizes[1]
+            );
+            assert!(state_entity.read(cx).is_collapsed(0));
+            assert!(!state_entity.read(cx).is_collapsed(1));
+        });
+    }
+
+    /// A second `collapse_panel` call on an already-collapsed panel is a no-op:
+    /// sizes must not change and the saved size must remain the original.
+    #[gpui::test]
+    fn test_collapse_noop_already_collapsed(cx: &mut TestAppContext) {
+        let vcx = cx.add_empty_window();
+        let state_entity = vcx.update(|_, cx| make_two_panel_state(cx));
+
+        // First collapse.
+        vcx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(1, px(28.), window, cx);
+            });
+        });
+
+        // Second collapse with a different strip size — must be a no-op.
+        vcx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(1, px(10.), window, cx);
+            });
+        });
+
+        vcx.update(|_, cx| {
+            let sizes = state_entity.read(cx).sizes().clone();
+            assert!(
+                (sizes[1].as_f32() - 28.0).abs() < 1.0,
+                "second collapse must be no-op; expected sizes[1] ≈ 28, got {:?}",
+                sizes[1]
+            );
+            assert!(state_entity.read(cx).is_collapsed(1));
+        });
+    }
+
+    /// An out-of-range index must be silently ignored.
+    #[gpui::test]
+    fn test_collapse_out_of_range_noop(cx: &mut TestAppContext) {
+        let vcx = cx.add_empty_window();
+        let state_entity = vcx.update(|_, cx| make_two_panel_state(cx));
+
+        vcx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(5, px(28.), window, cx); // out of range
+            });
+        });
+
+        vcx.update(|_, cx| {
+            assert_eq!(state_entity.read(cx).sizes().len(), 2);
+            assert!(!state_entity.read(cx).is_collapsed(0));
+            assert!(!state_entity.read(cx).is_collapsed(1));
+        });
+    }
+
+    /// Render-level regression: a collapsed panel must actually shrink to its
+    /// strip size in layout, not just in `sizes`. The collapse math lives in
+    /// `ResizableState`, but the flex floor (`min_w`/`min_h` + `flex_basis`)
+    /// is applied in `ResizablePanel::render`. Without a collapsed-floor
+    /// override there, the layout clamped the pane back up to `PANEL_MIN_SIZE`
+    /// (≈100 px) — so the "collapsed" pane kept rendering its body even though
+    /// `sizes[ix]` was 28. This test draws a real split and asserts the
+    /// collapsed panel's rendered bounds are ~28 px (it was ≥100 pre-fix).
+    #[gpui::test]
+    fn test_collapsed_panel_renders_at_strip_size(cx: &mut TestAppContext) {
+        use gpui::{IntoElement, ParentElement as _, Render, Styled as _, VisualTestContext, div};
+
+        cx.update(crate::init);
+
+        // Build the shared state up front (2 × 300 px in a 600 × 400 container)
+        // so we can read panel bounds back after rendering.
+        let state_entity = cx.update(|cx| make_two_panel_state(cx));
+
+        struct CollapseRenderRoot {
+            state: Entity<ResizableState>,
+        }
+        impl Render for CollapseRenderRoot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(600.)).h(px(400.)).child(
+                    h_resizable("collapse-render-test")
+                        .with_state(&self.state)
+                        .child(resizable_panel().child(div().child("left")))
+                        .child(resizable_panel().child(div().child("right"))),
+                )
+            }
+        }
+
+        let state_for_root = state_entity.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| CollapseRenderRoot {
+                state: state_for_root,
+            });
+            crate::Root::new(content, window, cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        // First draw establishes panel bounds at the expanded sizes.
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        // Collapse the right panel to a 28 px strip and redraw.
+        cx.update(|window, cx| {
+            state_entity.update(cx, |state, cx| {
+                state.collapse_panel(1, px(28.), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let width = cx.update(|_, cx| state_entity.read(cx).panels[1].bounds.size.width);
+        assert!(
+            width.as_f32() < 40.0,
+            "collapsed panel should render at ~28 px, got {:?} (the flex floor \
+             clamped it to PANEL_MIN_SIZE before the fix)",
+            width
+        );
+    }
 }
