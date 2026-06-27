@@ -146,6 +146,18 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
     /// tear-off / floating behavior (the dock itself does not pop the panel out).
     fn on_pop_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {}
 
+    /// Whether to render the per-tab pop-out button for this panel. Default is
+    /// `false` (no button), so panels that don't implement [`Self::on_pop_out`]
+    /// get no affordance. Unlike the close button, this is **independent of edit
+    /// mode** — a panel that returns `true` shows the button at all times. A
+    /// consumer enforcing a min-1 invariant should return `false` for the last
+    /// remaining tab.
+    ///
+    /// This method is called in Panel render, so it should be fast.
+    fn popout_visible(&self, cx: &App) -> bool {
+        false
+    }
+
     /// The addition dropdown menu of the panel, default is `None`.
     fn dropdown_menu(
         &mut self,
@@ -193,6 +205,7 @@ pub trait PanelView: 'static + Send + Sync {
     fn on_added_to(&self, tab_panel: WeakEntity<TabPanel>, window: &mut Window, cx: &mut App);
     fn on_removed(&self, window: &mut Window, cx: &mut App);
     fn on_pop_out(&self, window: &mut Window, cx: &mut App);
+    fn popout_visible(&self, cx: &App) -> bool;
     fn dropdown_menu(&self, menu: PopupMenu, window: &mut Window, cx: &mut App) -> PopupMenu;
     fn toolbar_buttons(&self, window: &mut Window, cx: &mut App) -> Option<Vec<Button>>;
     fn view(&self) -> AnyView;
@@ -263,6 +276,10 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn on_pop_out(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |this, cx| this.on_pop_out(window, cx));
+    }
+
+    fn popout_visible(&self, cx: &App) -> bool {
+        self.read(cx).popout_visible(cx)
     }
 
     fn dropdown_menu(&self, menu: PopupMenu, window: &mut Window, cx: &mut App) -> PopupMenu {
