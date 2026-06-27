@@ -99,6 +99,8 @@ pub enum PanelInfo {
     Stack {
         sizes: Vec<Pixels>,
         axis: usize, // 0 for horizontal, 1 for vertical
+        #[serde(default)]
+        collapsed: Vec<bool>,
     },
     #[serde(rename = "tabs")]
     Tabs { active_index: usize },
@@ -109,8 +111,8 @@ pub enum PanelInfo {
 }
 
 impl PanelInfo {
-    pub fn stack(sizes: Vec<Pixels>, axis: Axis) -> Self {
-        Self::Stack { sizes, axis: if axis == Axis::Horizontal { 0 } else { 1 } }
+    pub fn stack(sizes: Vec<Pixels>, axis: Axis, collapsed: Vec<bool>) -> Self {
+        Self::Stack { sizes, axis: if axis == Axis::Horizontal { 0 } else { 1 }, collapsed }
     }
 
     pub fn tabs(active_index: usize) -> Self {
@@ -183,10 +185,19 @@ impl PanelState {
             .collect();
 
         match info {
-            PanelInfo::Stack { sizes, axis } => {
+            PanelInfo::Stack { sizes, axis, collapsed } => {
                 let axis = if axis == 0 { Axis::Horizontal } else { Axis::Vertical };
                 let sizes = sizes.iter().map(|s| Some(*s)).collect_vec();
-                DockItem::split_with_sizes(axis, items, sizes, &dock_area, window, cx)
+                let item =
+                    DockItem::split_with_sizes(axis, items, sizes, &dock_area, window, cx);
+                if let DockItem::Split { ref view, .. } = item {
+                    for (ix, &is_collapsed) in collapsed.iter().enumerate() {
+                        if is_collapsed {
+                            view.update(cx, |sp, cx| sp.mark_child_collapsed(ix, cx));
+                        }
+                    }
+                }
+                item
             }
             PanelInfo::Tabs { active_index } => {
                 if items.len() == 1 {
@@ -227,6 +238,35 @@ mod tests {
     use gpui::px;
 
     use super::*;
+
+    #[test]
+    fn test_panel_info_stack_collapsed_round_trip() {
+        // New format: collapsed field is preserved through serialize → deserialize.
+        let info = PanelInfo::Stack {
+            sizes: vec![px(572.), px(300.)],
+            axis: 0,
+            collapsed: vec![false, true],
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: PanelInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, info);
+    }
+
+    #[test]
+    fn test_panel_info_stack_collapsed_defaults_empty_for_old_json() {
+        // Old JSON without the collapsed field → defaults to empty vec (all expanded).
+        let old_json = r#"{"stack":{"sizes":[704.0,263.0],"axis":1}}"#;
+        let info: PanelInfo = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            info,
+            PanelInfo::Stack {
+                sizes: vec![px(704.), px(263.)],
+                axis: 1,
+                collapsed: vec![],
+            }
+        );
+    }
+
     #[test]
     fn test_deserialize_item_state() {
         let json = include_str!("../fixtures/layout.json");

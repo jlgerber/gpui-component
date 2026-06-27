@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, App, AppContext, Context, DismissEvent, Div, DragMoveEvent, Empty, Entity,
+    Anchor, App, AppContext, Context, DismissEvent, Div, DragMoveEvent, Empty, Entity, EntityId,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement,
     Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, StyleRefinement,
     Styled, WeakEntity, Window, div, prelude::FluentBuilder, px, relative, rems,
@@ -69,6 +69,8 @@ pub struct TabPanel {
     dock_area: WeakEntity<DockArea>,
     /// The stock_panel can be None, if is None, that means the panels can't be split or move
     stack_panel: Option<WeakEntity<StackPanel>>,
+    /// This panel's own entity id, used to locate self in parent without Context<Self>.
+    entity_id: EntityId,
     pub(crate) panels: Vec<Arc<dyn PanelView>>,
     pub(crate) active_ix: usize,
     /// If this is true, the Panel closable will follow the active panel's closable,
@@ -170,6 +172,7 @@ impl TabPanel {
             focus_handle: cx.focus_handle(),
             dock_area,
             stack_panel,
+            entity_id: cx.entity().entity_id(),
             panels: Vec::new(),
             active_ix: 0,
             tab_bar_scroll_handle: ScrollHandle::new(),
@@ -444,6 +447,60 @@ impl TabPanel {
         cx.notify();
     }
 
+    /// Collapse this panel's slot in its parent `StackPanel`.
+    ///
+    /// No-ops when this panel has no parent stack (e.g. single-panel layout).
+    pub fn collapse_in_parent(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let self_arc: std::sync::Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(ix) = stack_panel.read(cx).child_index_of(&self_arc) else {
+            return;
+        };
+        stack_panel.update(cx, |sp, cx| sp.collapse_child(ix, window, cx));
+    }
+
+    /// Expand this panel's slot in its parent `StackPanel`.
+    ///
+    /// No-ops when this panel has no parent stack.
+    pub fn expand_in_parent(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let self_arc: std::sync::Arc<dyn PanelView> = Arc::new(cx.entity().clone());
+        let Some(ix) = stack_panel.read(cx).child_index_of(&self_arc) else {
+            return;
+        };
+        stack_panel.update(cx, |sp, cx| sp.expand_child(ix, window, cx));
+    }
+
+    /// Return `true` if this panel's slot in its parent `StackPanel` is collapsed.
+    ///
+    /// Returns `false` when there is no parent stack.
+    pub fn is_collapsed_in_parent(&self, cx: &App) -> bool {
+        let Some(stack_panel) = self.stack_panel.as_ref().and_then(|w| w.upgrade()) else {
+            return false;
+        };
+        let stack = stack_panel.read(cx);
+        let Some(ix) = stack.index_of_entity_id(self.entity_id, cx) else {
+            return false;
+        };
+        stack.is_child_collapsed(ix, cx)
+    }
+
+    /// True if this panel sits in a real split — its parent `StackPanel` has
+    /// more than one child. False when it's the only panel in its stack (no
+    /// split to collapse) or has no parent stack. Lets consumers show a
+    /// minimize affordance only where collapsing actually does something.
+    pub fn is_in_split(&self, cx: &App) -> bool {
+        self.stack_panel
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|sp| sp.read(cx).panels_len() > 1)
+            .unwrap_or(false)
+    }
+
     fn is_locked(&self, cx: &App) -> bool {
         let Some(dock_area) = self.dock_area.upgrade() else {
             return true;
@@ -525,6 +582,8 @@ impl TabPanel {
                         .map(|btn| btn.xsmall().ghost().tab_stop(false)),
                 )
             })
+            // Split collapse/expand sits to the left of the zoom control.
+            .children(self.render_split_collapse_button(window, cx))
             .map(|this| {
                 let value = if zoomed {
                     Some(("zoom-out", IconName::Minimize, t!("Dock.Zoom Out")))
@@ -671,6 +730,46 @@ impl TabPanel {
         )
     }
 
+    /// Minimize/expand this panel's slot within its parent split. Shown only on
+    /// a real split pane (parent stack with >1 child). Reads the parent stack
+    /// (an ancestor entity) + `self`'s own fields — safe during render; it never
+    /// reads `self` the entity (which would reentrancy-panic mid-render).
+    fn render_split_collapse_button(
+        &self,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Button> {
+        if self.zoomed || !self.is_in_split(cx) {
+            return None;
+        }
+        let collapsed = self.is_collapsed_in_parent(cx);
+        Some(
+            Button::new("toggle-split-collapse")
+                .icon(if collapsed {
+                    // Outward chevrons read as "open this back up".
+                    IconName::ChevronsUpDown
+                } else {
+                    // Inward chevrons read as "collapse this down".
+                    IconName::ChevronsDownUp
+                })
+                .xsmall()
+                .ghost()
+                .tab_stop(false)
+                .tooltip(if collapsed {
+                    t!("Dock.Expand")
+                } else {
+                    t!("Dock.Collapse")
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.is_collapsed_in_parent(cx) {
+                        this.expand_in_parent(window, cx);
+                    } else {
+                        this.collapse_in_parent(window, cx);
+                    }
+                })),
+        )
+    }
+
     fn render_title_bar(
         &mut self,
         state: &TabState,
@@ -693,32 +792,35 @@ impl TabPanel {
         let panel_style = dock_area.read(cx).panel_style;
         let visible_panels = self.visible_panels(cx).collect::<Vec<_>>();
 
+        // A collapsed SIDE dock is a thin vertical strip: show only the
+        // expand/contract toggle, centered — REGARDLESS of tab count, so a
+        // collapsed multi-tab side dock shows the toggle (not the active tab's
+        // truncated title). The panel label would otherwise fill the strip
+        // (`flex_1`/`min_w_16`) and push the toggle out of view (clipping the
+        // right dock's toggle entirely). The bottom dock keeps its full collapsed
+        // title bar (handled below). This must run before the single-panel branch
+        // so it applies whether the dock has one tab or many.
+        if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
+            // Top-anchored, title-bar-height row so the toggle sits at the TOP of
+            // the collapsed strip (not vertically centered in the full height),
+            // matching where an expanded title bar would be.
+            return h_flex()
+                .w_full()
+                .h(px(30.))
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .children(left_dock_button)
+                .children(right_dock_button)
+                .into_any_element();
+        }
+
         if visible_panels.len() == 1 && panel_style == PanelStyle::default() {
             let panel = visible_panels.get(0).unwrap();
 
             if !panel.visible(cx) {
                 return div().into_any_element();
-            }
-
-            // A collapsed SIDE dock is a thin vertical strip: show only the
-            // expand/contract toggle, centered — not the panel label, which would
-            // otherwise fill the strip (`flex_1`/`min_w_16`) and push the toggle
-            // out of view (clipping the right dock's toggle entirely). The bottom
-            // dock keeps its full collapsed title bar (handled below).
-            if self.collapsed && (left_dock_button.is_some() || right_dock_button.is_some()) {
-                // Top-anchored, title-bar-height row so the toggle sits at the TOP
-                // of the collapsed strip (not vertically centered in the full
-                // height), matching where an expanded title bar would be.
-                return h_flex()
-                    .w_full()
-                    .h(px(30.))
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .children(left_dock_button)
-                    .children(right_dock_button)
-                    .into_any_element();
             }
 
             let title_style = panel.title_style(cx);
@@ -773,6 +875,25 @@ impl TabPanel {
                         .flex_shrink_0()
                         .ml_1()
                         .gap_1()
+                        // Pop-out button for a single-tab dock (#21). The multi-tab
+                        // path renders this per tab in the TabBar; the single-panel
+                        // title bar has no TabBar, so render it here too — gated on
+                        // the same `Panel::popout_visible`, independent of edit mode.
+                        .when(panel.popout_visible(cx), |this| {
+                            let panel = (*panel).clone();
+                            this.child(
+                                Button::new("pop-out-single")
+                                    .icon(IconName::ExternalLink)
+                                    .tooltip(t!("Dock.Pop Out"))
+                                    .xsmall()
+                                    .ghost()
+                                    .tab_stop(false)
+                                    .on_click(cx.listener(move |_this, _ev, window, cx| {
+                                        cx.stop_propagation();
+                                        panel.on_pop_out(window, cx);
+                                    })),
+                            )
+                        })
                         .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(&state, window, cx))
                         .children(right_dock_button),
@@ -824,10 +945,15 @@ impl TabPanel {
                 // Per-tab closability: gate the close (x) on the TabPanel's
                 // closable flag AND this specific panel's closable(). The
                 // consumer sets closable = docked_count > 1, so the LAST docked
-                // tab is non-closable and gets no x (min-1 invariant).
-                // The per-tab pop-out/close affordances only render in edit mode.
-                let closable =
+                // tab is non-closable and gets no x (min-1 invariant). Close stays
+                // edit-mode only.
+                let close_visible =
                     crate::dock::is_edit_mode(cx) && self.closable && panel.closable(cx);
+                // The pop-out button is INDEPENDENT of edit mode (#21): the panel
+                // opts in via `Panel::popout_visible` (default false, so consumers
+                // that don't implement pop-out get no button). It enforces its own
+                // min-1 invariant in the `popout_visible` impl.
+                let popout_visible = panel.popout_visible(cx);
 
                 // Always not show active tab style, if the panel is collapsed
                 if self.collapsed {
@@ -846,7 +972,7 @@ impl TabPanel {
                             }
                         })
                         .selected(active)
-                        .when(closable, |this| {
+                        .when(close_visible || popout_visible, |this| {
                             this.suffix(
                                 h_flex()
                                     .gap_1()
@@ -856,43 +982,47 @@ impl TabPanel {
                                     // Pop-out button (before the close x). Invokes the
                                     // consumer's Panel::on_pop_out hook; the dock does not
                                     // remove/float the panel itself.
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "pop-out-tab:{}",
-                                            ix
-                                        )))
-                                        .icon(IconName::ExternalLink)
-                                        .tooltip(t!("Dock.Pop Out"))
-                                        .xsmall()
-                                        .ghost()
-                                        .tab_stop(false)
-                                        .on_click(cx.listener({
-                                            let panel = panel.clone();
-                                            move |_this, _ev, window, cx| {
-                                                // Don't also activate the tab.
-                                                cx.stop_propagation();
-                                                panel.on_pop_out(window, cx);
-                                            }
-                                        })),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "close-tab:{}",
-                                            ix
-                                        )))
-                                        .icon(IconName::Close)
-                                        .xsmall()
-                                        .ghost()
-                                        .tab_stop(false)
-                                        .on_click(cx.listener({
-                                            let panel = panel.clone();
-                                            move |this, _ev, window, cx| {
-                                                // Don't also activate the tab.
-                                                cx.stop_propagation();
-                                                this.remove_panel(panel.clone(), window, cx);
-                                            }
-                                        })),
-                                    ),
+                                    .when(popout_visible, |row| {
+                                        row.child(
+                                            Button::new(SharedString::from(format!(
+                                                "pop-out-tab:{}",
+                                                ix
+                                            )))
+                                            .icon(IconName::ExternalLink)
+                                            .tooltip(t!("Dock.Pop Out"))
+                                            .xsmall()
+                                            .ghost()
+                                            .tab_stop(false)
+                                            .on_click(cx.listener({
+                                                let panel = panel.clone();
+                                                move |_this, _ev, window, cx| {
+                                                    // Don't also activate the tab.
+                                                    cx.stop_propagation();
+                                                    panel.on_pop_out(window, cx);
+                                                }
+                                            })),
+                                        )
+                                    })
+                                    .when(close_visible, |row| {
+                                        row.child(
+                                            Button::new(SharedString::from(format!(
+                                                "close-tab:{}",
+                                                ix
+                                            )))
+                                            .icon(IconName::Close)
+                                            .xsmall()
+                                            .ghost()
+                                            .tab_stop(false)
+                                            .on_click(cx.listener({
+                                                let panel = panel.clone();
+                                                move |this, _ev, window, cx| {
+                                                    // Don't also activate the tab.
+                                                    cx.stop_propagation();
+                                                    this.remove_panel(panel.clone(), window, cx);
+                                                }
+                                            })),
+                                        )
+                                    }),
                             )
                         })
                         .on_click(cx.listener({
