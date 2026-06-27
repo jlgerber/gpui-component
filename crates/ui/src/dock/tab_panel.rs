@@ -875,6 +875,25 @@ impl TabPanel {
                         .flex_shrink_0()
                         .ml_1()
                         .gap_1()
+                        // Pop-out button for a single-tab dock (#21). The multi-tab
+                        // path renders this per tab in the TabBar; the single-panel
+                        // title bar has no TabBar, so render it here too — gated on
+                        // the same `Panel::popout_visible`, independent of edit mode.
+                        .when(panel.popout_visible(cx), |this| {
+                            let panel = (*panel).clone();
+                            this.child(
+                                Button::new("pop-out-single")
+                                    .icon(IconName::ExternalLink)
+                                    .tooltip(t!("Dock.Pop Out"))
+                                    .xsmall()
+                                    .ghost()
+                                    .tab_stop(false)
+                                    .on_click(cx.listener(move |_this, _ev, window, cx| {
+                                        cx.stop_propagation();
+                                        panel.on_pop_out(window, cx);
+                                    })),
+                            )
+                        })
                         .children(self.render_add_tab_button(window, cx))
                         .child(self.render_toolbar(&state, window, cx))
                         .children(right_dock_button),
