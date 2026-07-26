@@ -1286,6 +1286,13 @@ impl PopupMenu {
     /// child. It is also outside the scrollable `items` container, so a
     /// scrollable menu can show a submenu at all.
     ///
+    /// "Own container" means the outer, *unstyled* one. `Style::paint` paints
+    /// an element's border after its children, so hanging the panel off the
+    /// element that carries `popover_style` would let the parent's border —
+    /// and every shallower menu's border — draw on top of it. That only shows
+    /// where the panels overlap, i.e. exactly when a chain doubles back on
+    /// itself, and reads as the parent menu bleeding through the child.
+    ///
     /// Getting the same stacking with `deferred().with_priority(..)` would nest
     /// a deferred draw inside the one that already carries the menu's popover.
     /// gpui records a deferred draw's `prepaint_range` against a vector that
@@ -1389,39 +1396,63 @@ impl Render for PopupMenu {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::dismiss))
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
-            .popover_style(cx)
             .text_color(cx.theme().popover_foreground)
             .relative()
             .occlude()
+            // The visible popover surface is an *inner* element, not this
+            // container. `Style::paint` paints an element's border **after**
+            // its children (`continuation`, then `is_border_visible`), so a
+            // bordered element that owns the open submenu panel draws its
+            // border on top of it — which is exactly what a doubled-back
+            // panel overlapping its parent shows. Keeping the border one
+            // level in means every ancestor menu is fully painted before the
+            // submenu panel below.
+            //
+            // Everything that is not paint stays on the outer container:
+            // focus, key context, actions and `occlude` must keep the submenu
+            // inside this menu's dispatch subtree.
             .child(
                 v_flex()
-                    .id("items")
-                    .p_1()
-                    .gap_y_0p5()
-                    .min_w(rems(8.))
-                    .when_some(self.min_width, |this, min_width| this.min_w(min_width))
-                    .max_w(max_width)
-                    .when(self.scrollable, |this| {
-                        this.max_h(max_height)
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll_handle)
-                    })
-                    .children(
-                        self.menu_items
-                            .iter()
-                            .enumerate()
-                            // Ignore last separator
-                            .filter(|(ix, item)| !(*ix + 1 == items_count && item.is_separator()))
-                            .map(|(ix, item)| self.render_item(ix, item, options, window, cx)),
+                    .relative()
+                    .popover_style(cx)
+                    .child(
+                        v_flex()
+                            .id("items")
+                            .p_1()
+                            .gap_y_0p5()
+                            .min_w(rems(8.))
+                            .when_some(self.min_width, |this, min_width| this.min_w(min_width))
+                            .max_w(max_width)
+                            .when(self.scrollable, |this| {
+                                this.max_h(max_height)
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll_handle)
+                            })
+                            .children(
+                                self.menu_items
+                                    .iter()
+                                    .enumerate()
+                                    // Ignore last separator
+                                    .filter(|(ix, item)| {
+                                        !(*ix + 1 == items_count && item.is_separator())
+                                    })
+                                    .map(|(ix, item)| {
+                                        self.render_item(ix, item, options, window, cx)
+                                    }),
+                            )
+                            .on_prepaint(move |bounds, _, cx| {
+                                view.update(cx, |r, _| r.bounds = bounds)
+                            }),
                     )
-                    .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
+                    .when(self.scrollable, |this| {
+                        this.vertical_scrollbar(&self.scroll_handle)
+                    }),
             )
-            .when(self.scrollable, |this| {
-                this.vertical_scrollbar(&self.scroll_handle)
-            })
-            // Last child of the container, so it paints above every item of
-            // this menu — and above every shallower menu, since each level
-            // nests inside the previous one's last child. See
+            // Last child of the container — and a *sibling* of the bordered
+            // popover surface above, not a descendant of it — so it paints
+            // above every item and the border of this menu, and above every
+            // shallower menu, since each level nests inside the previous
+            // one's last child. See
             // `render_open_submenu`: this is the whole paint-order fix.
             .children(self.render_open_submenu())
     }
