@@ -8,13 +8,17 @@ use gpui::{
     Action, Anchor, AnyElement, App, AppContext, Bounds, Context, DismissEvent, Edges, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, WeakEntity, Window, anchored, div, prelude::FluentBuilder, px, rems,
+    Styled, WeakEntity, Window, anchored, div, point, prelude::FluentBuilder, px, rems,
 };
 use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 const CONTEXT: &str = "PopupMenu";
+
+/// Margin kept between a submenu panel and the window edges.
+const EDGE_PADDING: Pixels = px(4.);
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -54,8 +58,6 @@ pub enum PopupMenuItem {
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     },
     /// A submenu item that opens another popup menu.
-    ///
-    /// NOTE: This is only supported when the parent menu is not `scrollable`.
     Submenu {
         icon: Option<Icon>,
         label: SharedString,
@@ -299,6 +301,14 @@ pub struct PopupMenu {
     scroll_handle: ScrollHandle,
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
+    /// Bounds of each submenu row, by item index, recorded on prepaint.
+    ///
+    /// The open submenu panel is a child of this menu's container rather than
+    /// of the row it belongs to (see [`Self::render_open_submenu`]), so it has
+    /// to be positioned from the row's bounds explicitly. Every submenu row
+    /// records, not only the selected one, so a selection move is placed
+    /// correctly on the next frame instead of lagging one behind.
+    submenu_item_bounds: HashMap<usize, Bounds<Pixels>>,
 
     _subscriptions: Vec<Subscription>,
 }
@@ -321,6 +331,7 @@ impl PopupMenu {
             external_link_icon: true,
             size: Size::default(),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
+            submenu_item_bounds: HashMap::default(),
             _subscriptions: vec![],
         }
     }
@@ -1088,7 +1099,6 @@ impl PopupMenu {
         };
 
         let selected = self.selected_index == Some(ix);
-        const EDGE_PADDING: Pixels = px(4.);
         const INNER_PADDING: Pixels = px(8.);
 
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
@@ -1219,8 +1229,8 @@ impl PopupMenu {
             PopupMenuItem::Submenu {
                 icon,
                 label,
-                menu,
                 disabled,
+                ..
             } => this
                 .selected(selected)
                 .disabled(*disabled)
@@ -1252,27 +1262,80 @@ impl PopupMenu {
                                 ),
                         ),
                 )
-                .when(selected, |this| {
-                    this.child({
-                        let (anchor, left) = self.submenu_anchor;
-                        let is_bottom_pos =
-                            matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight);
-                        anchored()
-                            .anchor(anchor)
-                            .child(
-                                div()
-                                    .id("submenu")
-                                    .occlude()
-                                    .when(is_bottom_pos, |this| this.bottom_0())
-                                    .when(!is_bottom_pos, |this| this.top_neg_1())
-                                    .left(left)
-                                    .child(menu.clone()),
-                            )
-                            .snap_to_window_with_margin(Edges::all(EDGE_PADDING))
-                    })
+                // The open submenu panel itself is *not* a child of this row —
+                // it is rendered by the menu's own container, see
+                // `render_open_submenu`. The row only publishes where it is.
+                .on_prepaint({
+                    let view = cx.entity().clone();
+                    move |bounds, _, cx| {
+                        view.update(cx, |menu, _| {
+                            menu.submenu_item_bounds.insert(ix, bounds);
+                        });
+                    }
                 }),
         }
     }
+
+    /// Render the open submenu panel, if any.
+    ///
+    /// This is deliberately appended to the menu's **own container**, after
+    /// every item, instead of being a child of the selected row: paint order
+    /// within a layer is tree order, so being last is what makes the panel
+    /// paint above the rest of its parent menu — and, recursively, above every
+    /// shallower menu, since each level nests inside the previous one's last
+    /// child. It is also outside the scrollable `items` container, so a
+    /// scrollable menu can show a submenu at all.
+    ///
+    /// Getting the same stacking with `deferred().with_priority(..)` would nest
+    /// a deferred draw inside the one that already carries the menu's popover.
+    /// gpui records a deferred draw's `prepaint_range` against a vector that
+    /// `prepaint_deferred_draws` re-takes once per nesting round, so such a
+    /// range is replayed against the wrong index space by `reuse_prepaint()` —
+    /// under a cached ancestor (every `dock::TabPanel` panel) that corrupts the
+    /// deferred-draw list and crashes the main thread. Tree order costs nothing
+    /// and cannot alias.
+    ///
+    /// The price is that the row's bounds are one frame old (recorded by the
+    /// `on_prepaint` in [`Self::render_item`]) — the same lag
+    /// [`Self::update_submenu_menu_anchor`] already lives with. Bounds are kept
+    /// for *every* submenu row rather than just the selected one, so moving the
+    /// selection from row to row still places the panel correctly on the very
+    /// next frame.
+    fn render_open_submenu(&self) -> Option<AnyElement> {
+        let menu = self.active_submenu()?;
+        let item_bounds = *self.submenu_item_bounds.get(&self.selected_index?)?;
+        let (anchor, left) = self.submenu_anchor;
+
+        Some(
+            anchored()
+                .anchor(anchor)
+                .position(submenu_anchor_position(item_bounds, anchor, left))
+                .child(div().id("submenu").occlude().child(menu))
+                .snap_to_window_with_margin(Edges::all(EDGE_PADDING))
+                .into_any_element(),
+        )
+    }
+}
+
+/// Window-space point the open submenu panel is anchored to.
+///
+/// `item_bounds` is the selected row's content box and `anchor` / `left` come
+/// from [`PopupMenu::update_submenu_menu_anchor`]: `left` carries the parent
+/// menu's width for the left-hand anchors (so the panel sits just outside it)
+/// and a small negative inset for the right-hand ones. Top anchors additionally
+/// lift the panel by one pixel so the two panels' borders overlap; bottom
+/// anchors align the panel's bottom edge with the row and need no nudge.
+fn submenu_anchor_position(
+    item_bounds: Bounds<Pixels>,
+    anchor: Anchor,
+    left: Pixels,
+) -> Point<Pixels> {
+    let dy = match anchor {
+        Anchor::BottomLeft | Anchor::BottomRight => px(0.),
+        _ => -px(1.),
+    };
+
+    item_bounds.origin + point(left, dy)
 }
 
 impl FluentBuilder for PopupMenu {}
@@ -1354,9 +1417,13 @@ impl Render for PopupMenu {
                     .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
             )
             .when(self.scrollable, |this| {
-                // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
                 this.vertical_scrollbar(&self.scroll_handle)
             })
+            // Last child of the container, so it paints above every item of
+            // this menu — and above every shallower menu, since each level
+            // nests inside the previous one's last child. See
+            // `render_open_submenu`: this is the whole paint-order fix.
+            .children(self.render_open_submenu())
     }
 }
 
@@ -1383,5 +1450,43 @@ mod tests {
         );
         assert_eq!(PopupMenuItem::separator().a11y_label(), None);
         assert_eq!(PopupMenuItem::element(|_, _| div()).a11y_label(), None);
+    }
+
+    fn row() -> Bounds<Pixels> {
+        Bounds {
+            origin: gpui::point(px(100.), px(200.)),
+            size: gpui::size(px(180.), px(26.)),
+        }
+    }
+
+    #[test]
+    fn submenu_anchor_position_opens_right_of_the_row() {
+        // `left` is the parent menu's width: the panel starts just past it,
+        // lifted a pixel so the borders overlap.
+        assert_eq!(
+            submenu_anchor_position(row(), Anchor::TopLeft, px(172.)),
+            gpui::point(px(272.), px(199.))
+        );
+    }
+
+    #[test]
+    fn submenu_anchor_position_flips_to_the_left_of_the_row() {
+        assert_eq!(
+            submenu_anchor_position(row(), Anchor::TopRight, -px(16.)),
+            gpui::point(px(84.), px(199.))
+        );
+    }
+
+    #[test]
+    fn submenu_anchor_position_does_not_lift_bottom_anchors() {
+        // Bottom anchors align the panel's *bottom* edge with the row's top,
+        // so the one-pixel border overlap must not be applied.
+        for anchor in [Anchor::BottomLeft, Anchor::BottomRight] {
+            assert_eq!(
+                submenu_anchor_position(row(), anchor, px(172.)).y,
+                px(200.),
+                "{anchor:?} should not be nudged"
+            );
+        }
     }
 }
