@@ -78,6 +78,14 @@ pub struct Dock {
 }
 
 impl Dock {
+    /// Whether this dock's edge handle is currently being dragged.
+    ///
+    /// See [`crate::resizable::is_resizing`] for the same question asked
+    /// process-wide, which is what a widget inside a panel can reach.
+    pub fn is_resizing(&self) -> bool {
+        self.resizing
+    }
+
     pub(crate) fn new(
         dock_area: WeakEntity<DockArea>,
         placement: DockPlacement,
@@ -303,6 +311,7 @@ impl Dock {
                 view.update(cx, |view, _| {
                     view.resizing = true;
                 });
+                crate::resizable::set_resizing(cx, true);
                 cx.new(|_| info.deref().clone())
             })
     }
@@ -376,8 +385,12 @@ impl Dock {
         cx.notify();
     }
 
-    fn done_resizing(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn done_resizing(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.resizing = false;
+        // Called from a window-wide mouse-up handler, i.e. for every click as
+        // well as for a real drag release — `set_resizing` no-ops when the
+        // flag is already clear.
+        crate::resizable::set_resizing(cx, false);
     }
 }
 

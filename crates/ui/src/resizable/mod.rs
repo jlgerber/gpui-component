@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use gpui::{
-    Along, App, Axis, Bounds, Context, ElementId, EventEmitter, IsZero, Pixels, Window, px,
+    Along, App, Axis, Bounds, Context, ElementId, EventEmitter, Global, IsZero, Pixels, Window, px,
 };
 
 mod panel;
@@ -10,6 +10,44 @@ pub use panel::*;
 pub(crate) use resize_handle::*;
 
 pub(crate) const PANEL_MIN_SIZE: Pixels = px(100.);
+
+/// Process-wide "a divider drag is in flight" flag.
+///
+/// Set for the duration of a [`ResizablePanelGroup`] handle drag and of a
+/// [`crate::dock::Dock`] edge drag — the two gestures that continuously
+/// change the bounds of the panels around them.
+///
+/// It exists because that fact is otherwise unobservable from *inside* a
+/// panel: the drag state lives on the group's [`ResizableState`] / the
+/// `Dock`, and a leaf widget (a canvas, a chart, a 3D viewport) has no handle
+/// to either. Such a widget usually wants to know: content sized for the old
+/// bounds is being stretched into the new ones every mouse-move, and the
+/// honest thing to draw mid-gesture is often not the stale content.
+#[derive(Default, Clone, Copy)]
+pub struct ResizingDivider(pub bool);
+impl Global for ResizingDivider {}
+
+/// Whether a resizable-panel or dock divider is being dragged right now.
+///
+/// Read-only; the flag is maintained by the resize handles themselves.
+pub fn is_resizing(cx: &App) -> bool {
+    cx.try_global::<ResizingDivider>().map(|f| f.0).unwrap_or(false)
+}
+
+/// Record the start (`true`) / end (`false`) of a divider drag.
+///
+/// Idempotent, and deliberately so: the dock clears the flag from a
+/// window-wide mouse-up handler that also fires for every unrelated click, so
+/// a no-op call must not cost a window refresh.
+pub(crate) fn set_resizing(cx: &mut App, resizing: bool) {
+    if is_resizing(cx) == resizing {
+        return;
+    }
+    cx.set_global(ResizingDivider(resizing));
+    // Repaint: a widget that draws differently mid-drag must see both edges
+    // of the gesture, and the release edge has no other event behind it.
+    cx.refresh_windows();
+}
 
 /// Create a [`ResizablePanelGroup`] with horizontal resizing
 pub fn h_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {
@@ -53,6 +91,14 @@ impl ResizableState {
     /// Get the size of the panels.
     pub fn sizes(&self) -> &Vec<Pixels> {
         &self.sizes
+    }
+
+    /// Whether one of this group's handles is currently being dragged.
+    ///
+    /// See [`is_resizing`] for the same question asked process-wide, which is
+    /// what a widget with no handle to this state can reach.
+    pub fn is_resizing(&self) -> bool {
+        self.resizing_panel_ix.is_some()
     }
 
     /// Programmatically resize the panel at `ix` to `size`, redistributing
@@ -206,6 +252,7 @@ impl ResizableState {
 
     pub(crate) fn done_resizing(&mut self, cx: &mut Context<Self>) {
         self.resizing_panel_ix = None;
+        set_resizing(cx, false);
         cx.emit(ResizablePanelEvent::Resized);
     }
 
@@ -543,6 +590,33 @@ mod tests {
                 },
             },
         })
+    }
+
+    /// The divider-drag accessors: the per-group [`ResizableState::is_resizing`]
+    /// reflects the handle being dragged, and the process-wide
+    /// [`is_resizing`] — the one a widget *inside* a panel can reach — is
+    /// raised for the gesture and cleared again by `done_resizing`, which the
+    /// mouse-up handler calls.
+    #[gpui::test]
+    fn test_is_resizing_tracks_a_handle_drag(cx: &mut TestAppContext) {
+        let vcx = cx.add_empty_window();
+        let state_entity = vcx.update(|_, cx| make_two_panel_state(cx));
+
+        vcx.update(|_, cx| {
+            assert!(!state_entity.read(cx).is_resizing());
+            assert!(!is_resizing(cx), "no gesture has started");
+
+            // What a resize handle's `on_drag` does.
+            state_entity.update(cx, |state, _| state.resizing_panel_ix = Some(0));
+            set_resizing(cx, true);
+            assert!(state_entity.read(cx).is_resizing());
+            assert!(is_resizing(cx), "the drag must be observable process-wide");
+
+            // …and what the window's mouse-up handler does.
+            state_entity.update(cx, |state, cx| state.done_resizing(cx));
+            assert!(!state_entity.read(cx).is_resizing());
+            assert!(!is_resizing(cx), "the release must clear the flag");
+        });
     }
 
     /// Collapse the last panel (index 1) and verify sizes and is_collapsed.
