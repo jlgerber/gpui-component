@@ -184,6 +184,12 @@ Dock:
     zh-HK: 展開
     zh-TW: 展開
     it: Espandi
+  Edit Layout:
+    en: Edit Layout
+    zh-CN: 编辑布局
+    zh-HK: 編輯佈局
+    zh-TW: 編輯版面
+    it: Modifica layout
 ColorPicker:
   Palette:
     en: Palette

@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     ClosePanel, DockArea, DockPlacement, Panel, PanelControl, PanelEvent, PanelRegistry,
-    PanelState, PanelStyle, PanelView, StackPanel, ToggleZoom,
+    PanelState, PanelStyle, PanelView, StackPanel, ToggleEditMode, ToggleZoom,
 };
 
 #[derive(Clone)]
@@ -625,6 +625,19 @@ impl TabPanel {
                         let closable = state.closable;
 
                         move |menu, window, cx| {
+                            // Dock edit mode is a layout-wide toggle, so it leads
+                            // the panel menu — above every consumer-supplied entry
+                            // (`Panel::dropdown_menu`, which is where a host puts
+                            // its own "pop out" / "clear" style items). The check
+                            // mark reflects the process-wide `DockEditMode`.
+                            let editing = crate::dock::is_edit_mode(cx);
+                            let menu = menu
+                                .menu_with_check(
+                                    t!("Dock.Edit Layout"),
+                                    editing,
+                                    Box::new(ToggleEditMode),
+                                )
+                                .separator();
                             view.update(cx, |this, cx| {
                                 this.dropdown_menu(menu, window, cx)
                                     .separator()
@@ -1420,6 +1433,22 @@ impl TabPanel {
         .detach();
     }
 
+    /// Toggle the process-wide dock edit mode from the panel's `...` menu.
+    ///
+    /// Edit mode is a global (`DockEditMode`), not per-panel state, so every
+    /// panel's menu entry drives the same switch — the same one a host's own
+    /// "Edit Layout" menu item would.
+    fn on_action_toggle_edit_mode(
+        &mut self,
+        _: &ToggleEditMode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let on = crate::dock::is_edit_mode(cx);
+        crate::dock::set_edit_mode(cx, !on);
+        cx.notify();
+    }
+
     fn on_action_close_panel(
         &mut self,
         _: &ClosePanel,
@@ -1453,6 +1482,7 @@ impl TabPanel {
         v_flex().when(!self.collapsed, |this| {
             this.on_action(cx.listener(Self::on_action_toggle_zoom))
                 .on_action(cx.listener(Self::on_action_close_panel))
+                .on_action(cx.listener(Self::on_action_toggle_edit_mode))
         })
     }
 }

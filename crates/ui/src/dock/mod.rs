@@ -27,7 +27,7 @@ pub(crate) fn init(cx: &mut App) {
     PanelRegistry::init(cx);
 }
 
-actions!(dock, [ToggleZoom, ClosePanel]);
+actions!(dock, [ToggleZoom, ClosePanel, ToggleEditMode]);
 
 /// Process-wide dock edit mode. When off, tab-editing affordances (+ / pop-out /
 /// close x) are hidden. Off by default.
