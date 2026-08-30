@@ -13,6 +13,46 @@ pub use resize_handle::*;
 #[doc(hidden)]
 pub const PANEL_MIN_SIZE: Pixels = px(100.);
 
+/// Process-wide "a divider drag is in flight" flag.
+///
+/// Set for the duration of a [`ResizablePanelGroup`] handle drag and of a dock
+/// edge drag — the two gestures that continuously change the bounds of the
+/// panels around them.
+///
+/// It exists because that fact is otherwise unobservable from *inside* a
+/// panel: the drag state lives on the group's [`ResizableState`] or on the
+/// dock, and a leaf widget (a canvas, a chart, a 3D viewport) has a handle to
+/// neither. Such a widget usually wants to know: content sized for the old
+/// bounds is being stretched into the new ones on every mouse-move, and the
+/// honest thing to draw mid-gesture is often not the stale content.
+#[derive(Default, Clone, Copy)]
+pub struct ResizingDivider(pub bool);
+impl gpui::Global for ResizingDivider {}
+
+/// Whether a resizable-panel or dock divider is being dragged right now.
+///
+/// Read-only; the flag is maintained by the resize handles themselves.
+pub fn is_resizing(cx: &gpui::App) -> bool {
+    cx.try_global::<ResizingDivider>()
+        .map(|f| f.0)
+        .unwrap_or(false)
+}
+
+/// Record the start (`true`) / end (`false`) of a divider drag.
+///
+/// Idempotent, and deliberately so: the dock clears the flag from a
+/// window-wide mouse-up handler that also fires for every unrelated click, so
+/// a no-op call must not cost a window refresh.
+pub fn set_resizing(cx: &mut gpui::App, resizing: bool) {
+    if is_resizing(cx) == resizing {
+        return;
+    }
+    cx.set_global(ResizingDivider(resizing));
+    // Repaint: a widget that draws differently mid-drag must see both edges of
+    // the gesture, and the release edge has no other event behind it.
+    cx.refresh_windows();
+}
+
 /// Create a [`ResizablePanelGroup`] with horizontal resizing
 pub fn h_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {
     ResizablePanelGroup::new(id).axis(Axis::Horizontal)
@@ -250,8 +290,17 @@ impl ResizableState {
         self.bounds.size.along(self.axis)
     }
 
+    /// Whether one of this group's handles is currently being dragged.
+    ///
+    /// See [`is_resizing`] for the same question asked process-wide, which is
+    /// what a widget with no handle to this state can reach.
+    pub fn is_resizing(&self) -> bool {
+        self.resizing_panel_ix.is_some()
+    }
+
     pub(crate) fn done_resizing(&mut self, cx: &mut Context<Self>) {
         self.resizing_panel_ix = None;
+        set_resizing(cx, false);
         cx.emit(ResizablePanelEvent::Resized);
     }
 

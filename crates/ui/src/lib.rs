@@ -63,6 +63,10 @@ pub mod resizable {
         ResizablePanel, ResizablePanelEvent, ResizablePanelGroup, ResizableState, h_resizable,
         resizable_panel, v_resizable,
     };
+    // The divider-drag flag: `is_resizing` is the process-wide question a
+    // widget *inside* a panel can ask, since it has no handle to the group's
+    // `ResizableState` (which answers the same thing per-group).
+    pub use gpui_base::{ResizingDivider, is_resizing, set_resizing};
 }
 pub mod scroll;
 pub mod searchable_list;
