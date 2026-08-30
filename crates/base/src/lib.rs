@@ -131,7 +131,7 @@ pub use progress::{Progress, ProgressIndicator, ProgressTrack};
 pub use radio::{Radio, RadioStyles};
 pub use radio_group::RadioGroup;
 #[doc(hidden)]
-pub use resizable::{PANEL_MIN_SIZE, resize_handle};
+pub use resizable::{PANEL_MIN_SIZE, ResizingDivider, is_resizing, resize_handle, set_resizing};
 pub use resizable::{
     ResizablePanel, ResizablePanelEvent, ResizablePanelGroup, ResizableState, ResizeHandleContext,
     ResizeHandleRenderer, h_resizable, resizable_panel, v_resizable,

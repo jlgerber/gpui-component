@@ -361,6 +361,7 @@ impl RenderOnce for ResizablePanel {
                             state.update(cx, |state, _| {
                                 state.resizing_panel_ix = Some(ix);
                             });
+                            super::set_resizing(cx, true);
                             cx.new(|_| drag_panel.deref().clone())
                         }),
                 )
